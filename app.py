@@ -7,37 +7,46 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v6.7", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v6.8", layout="centered")
 
-# 5秒自动刷新
-count = st_autorefresh(interval=5000, limit=None, key="realtime_counter")
+# 5秒刷新
+st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS 样式：加回了呼吸灯 (.pulse-dot)
+# CSS: 强制固定卡片高度，防止内容变化导致的抖动
 st.markdown("""
     <style>
     .stApp {background-color: #ffffff;}
     h1, h2, h3, div, p, span {color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;}
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
     
+    /* 强制固定 Metric 卡片高度，防止加载时塌陷 */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa !important;
         border: 1px solid #e9ecef;
         box-shadow: 0 2px 5px rgba(0,0,0,0.03);
         border-radius: 10px;
+        min-height: 100px; /* 关键：固定最小高度 */
+        display: flex; flex-direction: column; justify-content: center;
     }
+    
     [data-testid="stMetricValue"] {
         font-weight: 700; font-size: 1.4rem !important; color: #212529 !important;
     }
+    
+    /* 预测框样式 */
     .pred-box {
         padding: 15px; border-radius: 12px; margin-top: 10px; text-align: center;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.08); transition: all 0.2s ease;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
+        min-height: 110px; /* 固定高度 */
+        display: flex; flex-direction: column; justify-content: center;
     }
+    
+    /* 时间栏 */
     .time-bar {
         font-size: 0.8rem; color: #666; text-align: center;
-        margin-bottom: 10px; padding: 6px; background: #f1f3f5; border-radius: 6px;
+        margin-bottom: 15px; padding: 6px; background: #f1f3f5; border-radius: 6px;
         border: 1px solid #e9ecef;
     }
-    /* 呼吸灯动画 */
     .pulse-dot {
         height: 8px; width: 8px; background-color: #00e676;
         border-radius: 50%; display: inline-block; margin-right: 6px;
@@ -50,183 +59,188 @@ st.markdown("""
         70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(0, 230, 118, 0); }
         100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 230, 118, 0); }
     }
-    .status-badge {
-        font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 5px; vertical-align: middle;
-    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 【核心修复】先渲染 UI，再抓数据 ---
-# 这样无论数据抓取多久，标题和时间栏都纹丝不动
+# --- 2. 状态初始化 (Session State) ---
+# 这一步非常关键：我们用 session_state 存下“上一秒的数据”
+# 这样在刷新时，我们可以先显示旧数据，确保页面不白屏
+if 'data_cache' not in st.session_state:
+    st.session_state['data_cache'] = None
 
-st.markdown("### ⚡ BTDR 领航员 v6.7")
+# --- 3. 布局骨架 (Placeholders) ---
+# 先把坑挖好，这样页面结构就固定了，不会乱跑
+st.markdown("### ⚡ BTDR 领航员 v6.8")
 
-# 计算时间 (纯本地计算，0延迟)
-tz_bj = pytz.timezone('Asia/Shanghai')
-tz_ny = pytz.timezone('America/New_York')
-now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
-now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
+# 3.1 时间栏占位符
+ph_time = st.empty()
 
-# 立即显示时间栏 (带呼吸灯)
-st.markdown(f"""
-<div class='time-bar'>
-    <div class='pulse-dot'></div>
-    北京: <b>{now_bj}</b> &nbsp;|&nbsp; 美东: <b>{now_ny}</b>
-</div>
-""", unsafe_allow_html=True)
-
-
-# --- 3. 黄金参数 ---
-MODEL = {
-    "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
-    "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
-    "beta_sector": 0.25
-}
-
-# --- 4. 数据获取 (yfinance Batch) ---
-@st.cache_data(ttl=5)
-def get_yfinance_batch():
-    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
-    try:
-        data = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
-        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
-        
-        quotes = {}
-        symbols = tickers_list.split()
-        
-        for sym in symbols:
-            try:
-                df_min = data[sym].dropna(subset=['Close'])
-                df_day = daily[sym].dropna(subset=['Close'])
-                
-                # 最新价
-                if df_min.empty:
-                    current_price = df_day['Close'].iloc[-1] if not df_day.empty else 0
-                else:
-                    current_price = df_min['Close'].iloc[-1]
-                
-                # 昨收
-                if len(df_day) >= 2:
-                    prev_close = df_day['Close'].iloc[-2]
-                elif len(df_day) == 1:
-                    prev_close = df_day['Close'].iloc[-1]
-                else:
-                    prev_close = current_price
-                
-                # 涨跌
-                if prev_close > 0:
-                    pct = ((current_price - prev_close) / prev_close) * 100
-                else:
-                    pct = 0
-                
-                # 开盘
-                if not df_day.empty and df_day.index[-1].date() == pd.Timestamp.now().date():
-                     open_price = df_day['Open'].iloc[-1]
-                else:
-                     open_price = current_price
-
-                quotes[sym] = {
-                    "price": current_price,
-                    "pct": pct,
-                    "prev": prev_close,
-                    "open": open_price
-                }
-            except:
-                quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0}
-        return quotes
-    except:
-        return None
-
-def get_sentiment():
-    try:
-        fng = requests.get("https://api.alternative.me/fng/", timeout=1).json()
-        return int(fng['data'][0]['value'])
-    except:
-        return 50
-
-# --- 5. 主逻辑 ---
-
-# 数据抓取放在 UI 渲染之后
-raw_quotes = get_yfinance_batch()
-fng_val = get_sentiment()
-
-# 如果数据还没来，先不渲染下面的内容，但上面的时间栏已经显示了，所以不会乱动
-if raw_quotes is None or 'BTDR' not in raw_quotes or raw_quotes['BTDR']['price'] == 0:
-    st.info("📡 正在同步华尔街数据...")
-    st.stop()
-
-# 数据处理
-btc_chg = raw_quotes['BTC-USD']['pct']
-btdr = raw_quotes['BTDR']
-
-peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
-valid_peers = [p for p in peers if raw_quotes[p]['price'] > 0]
-if valid_peers:
-    peers_avg = sum(raw_quotes[p]['pct'] for p in valid_peers) / len(valid_peers)
-else:
-    peers_avg = 0
-
-sector_alpha = peers_avg - btc_chg
-sentiment_adj = (fng_val - 50) * 0.02
-
-if btdr['price'] > 0:
-    btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
-    
-    pred_high_pct = (MODEL['high']['intercept'] + (MODEL['high']['beta_open'] * btdr_open_pct) + (MODEL['high']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
-    pred_low_pct = (MODEL['low']['intercept'] + (MODEL['low']['beta_open'] * btdr_open_pct) + (MODEL['low']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
-    
-    pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
-    pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
-else:
-    btdr_open_pct = 0; pred_high_price = 0; pred_low_price = 0; pred_high_pct = 0; pred_low_pct = 0
-
-# --- 6. 渲染下半部分 ---
-
+# 3.2 核心指标占位符
 c1, c2 = st.columns(2)
-c1.metric("BTC (全时段)", f"{btc_chg:+.2f}%")
-c2.metric("恐慌指数", f"{fng_val}")
+with c1: ph_btc = st.empty()
+with c2: ph_fng = st.empty()
 
 st.markdown("##### ⚒️ 矿股板块 Beta")
+# 3.3 板块占位符 (5个)
 cols = st.columns(5)
-for i, p in enumerate(peers):
-    if p in raw_quotes:
-        cols[i].metric(p, f"{raw_quotes[p]['pct']:+.1f}%")
+ph_peers = []
+for i in range(5):
+    with cols[i]: ph_peers.append(st.empty())
 
 st.markdown("---")
 
+# 3.4 BTDR 本体占位符
 c3, c4 = st.columns(2)
-c3.markdown(f"<div style='font-size:0.9rem; color:#666;'>BTDR 实时价</div>", unsafe_allow_html=True)
-c3.markdown(f"<div style='font-size:1.8rem; font-weight:bold; color:#212529;'>${btdr['price']:.2f}</div>", unsafe_allow_html=True)
-c3.markdown(f"<div style='color:{'#198754' if btdr['pct']>=0 else '#dc3545'}; font-weight:bold;'>{btdr['pct']:+.2f}%</div>", unsafe_allow_html=True)
-
-c4.metric("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%")
+with c3: ph_btdr_price = st.empty()
+with c4: ph_btdr_open = st.empty()
 
 st.markdown("### 🎯 AI 全时段预测")
 col_h, col_l = st.columns(2)
+with col_h: ph_pred_high = st.empty()
+with col_l: ph_pred_low = st.empty()
 
-bg_high = "#d1e7dd"; text_high = "#0f5132"
-bg_low = "#f8d7da"; text_low = "#842029"
-h_border = "2px solid #00e676" if btdr['price'] >= pred_high_price else "1px solid #badbcc"
-l_border = "2px solid #ff1744" if btdr['price'] <= pred_low_price else "1px solid #f5c2c7"
+st.markdown("---")
+ph_footer = st.empty()
 
-with col_h:
-    st.markdown(f"""
+# --- 4. 渲染函数 (Render Function) ---
+# 这个函数负责把数据填进上面的坑里
+def render_ui(data):
+    if not data: return
+    
+    quotes = data['quotes']
+    fng_val = data['fng']
+    btc_chg = quotes['BTC-USD']['pct']
+    btdr = quotes['BTDR']
+    
+    # 时间计算
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    tz_ny = pytz.timezone('America/New_York')
+    now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
+    
+    # 填坑：时间
+    ph_time.markdown(f"""
+    <div class='time-bar'>
+        <div class='pulse-dot'></div>
+        北京: <b>{now_bj}</b> &nbsp;|&nbsp; 美东: <b>{now_ny}</b>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 填坑：指标
+    ph_btc.metric("BTC (全时段)", f"{btc_chg:+.2f}%")
+    ph_fng.metric("恐慌指数", f"{fng_val}")
+    
+    # 填坑：板块
+    peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
+    for i, p in enumerate(peers):
+        if p in quotes:
+            ph_peers[i].metric(p, f"{quotes[p]['pct']:+.1f}%")
+            
+    # 计算预测
+    valid_peers = [p for p in peers if quotes[p]['price'] > 0]
+    peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers) if valid_peers else 0
+    sector_alpha = peers_avg - btc_chg
+    sentiment_adj = (fng_val - 50) * 0.02
+    
+    # 模型参数
+    MODEL = {
+        "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
+        "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
+        "beta_sector": 0.25
+    }
+    
+    pred_high_price, pred_low_price, pred_high_pct, pred_low_pct = 0,0,0,0
+    btdr_open_pct = 0
+    
+    if btdr['price'] > 0:
+        btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
+        pred_high_pct = (MODEL['high']['intercept'] + (MODEL['high']['beta_open'] * btdr_open_pct) + (MODEL['high']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
+        pred_low_pct = (MODEL['low']['intercept'] + (MODEL['low']['beta_open'] * btdr_open_pct) + (MODEL['low']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
+        pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
+        pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
+
+    # 填坑：BTDR
+    ph_btdr_price.markdown(f"""
+    <div style="background-color:#f8f9fa; border:1px solid #e9ecef; border-radius:10px; padding:10px; min-height:100px; display:flex; flex-direction:column; justify-content:center;">
+        <div style='font-size:0.9rem; color:#666;'>BTDR 实时价</div>
+        <div style='font-size:1.8rem; font-weight:bold; color:#212529;'>${btdr['price']:.2f}</div>
+        <div style='color:{'#198754' if btdr['pct']>=0 else '#dc3545'}; font-weight:bold;'>{btdr['pct']:+.2f}%</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    ph_btdr_open.metric("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%")
+    
+    # 填坑：预测
+    bg_high = "#d1e7dd"; text_high = "#0f5132"
+    bg_low = "#f8d7da"; text_low = "#842029"
+    h_border = "2px solid #00e676" if btdr['price'] >= pred_high_price else "1px solid #badbcc"
+    l_border = "2px solid #ff1744" if btdr['price'] <= pred_low_price else "1px solid #f5c2c7"
+
+    ph_pred_high.markdown(f"""
     <div class="pred-box" style="background-color: {bg_high}; color: {text_high}; border: {h_border};">
         <div style="font-size: 0.9rem;">阻力位 (High)</div>
         <div style="font-size: 1.6rem; font-weight: bold;">${pred_high_price:.2f}</div>
         <div style="font-size: 0.8rem;">预期: {pred_high_pct:+.2f}%</div>
     </div>
     """, unsafe_allow_html=True)
-
-with col_l:
-    st.markdown(f"""
+    
+    ph_pred_low.markdown(f"""
     <div class="pred-box" style="background-color: {bg_low}; color: {text_low}; border: {l_border};">
         <div style="font-size: 0.9rem;">支撑位 (Low)</div>
         <div style="font-size: 1.6rem; font-weight: bold;">${pred_low_price:.2f}</div>
         <div style="font-size: 0.8rem;">预期: {pred_low_pct:+.2f}%</div>
     </div>
     """, unsafe_allow_html=True)
+    
+    ph_footer.caption(f"数据源: yfinance (Batch) | 稳定模式 | 美东时间: {now_ny}")
 
-# 底部状态栏
-st.markdown("---")
-st.caption(f"数据源: yfinance (Batch) | 刷新: 5秒")
+# --- 5. 执行逻辑 (关键) ---
+
+# 步骤 A: 如果有缓存数据，先渲染缓存！(这样页面一打开就是满的，不会闪白屏)
+if st.session_state['data_cache']:
+    render_ui(st.session_state['data_cache'])
+else:
+    # 如果是第一次打开，显示加载中占位
+    ph_time.info("📡 正在连接华尔街专线...")
+
+# 步骤 B: 去下载新数据
+try:
+    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
+    data = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
+    daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
+    
+    quotes = {}
+    symbols = tickers_list.split()
+    for sym in symbols:
+        try:
+            df_min = data[sym].dropna(subset=['Close'])
+            df_day = daily[sym].dropna(subset=['Close'])
+            
+            # 最新价
+            current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
+            # 昨收
+            prev_close = df_day['Close'].iloc[-2] if len(df_day) >= 2 else current_price
+            # 涨跌
+            pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+            # 开盘
+            open_price = df_day['Open'].iloc[-1] if not df_day.empty and df_day.index[-1].date() == pd.Timestamp.now().date() else current_price
+
+            quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price}
+        except:
+            quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0}
+            
+    # 获取情绪
+    try:
+        fng_val = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
+    except:
+        fng_val = 50
+        
+    new_data = {'quotes': quotes, 'fng': fng_val}
+    
+    # 步骤 C: 更新缓存并重新渲染 (无感更新)
+    st.session_state['data_cache'] = new_data
+    render_ui(new_data)
+
+except Exception as e:
+    # 如果下载失败，保持旧数据不动，不要报错
+    pass
