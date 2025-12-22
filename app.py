@@ -1,173 +1,252 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import requests
 from sklearn.linear_model import LinearRegression
-from datetime import datetime, timedelta
 
-# --- 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v5.0", layout="centered")
+# --- 1. 页面配置与强制白底 CSS ---
+st.set_page_config(page_title="BTDR Pilot v5.1", layout="centered")
 
-# 自定义 CSS 让手机端显示更紧凑
+# 强制明亮主题 CSS
 st.markdown("""
     <style>
-    .stMetric {background-color: #1e1e1e; padding: 10px; border-radius: 5px; border: 1px solid #333;}
-    [data-testid="stMetricValue"] {font-size: 1.2rem !important;}
-    h1 {text-align: center; color: #bb86fc; font-size: 1.5rem !important;}
-    .big-font {font-size:20px !important; font-weight: bold;}
-    .green {color: #00e676;}
-    .red {color: #cf6679;}
+    /* 全局背景设为极淡的灰色，护眼 */
+    .stApp {
+        background-color: #f8f9fa;
+    }
+    
+    /* 标题颜色强制为深色 */
+    h1, h2, h3, h4, h5, p, div {
+        color: #212529 !important;
+    }
+    
+    /* 卡片样式：白底、阴影、圆角 */
+    div[data-testid="stMetric"] {
+        background-color: #ffffff !important;
+        border: 1px solid #e9ecef;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        color: #212529 !important;
+    }
+    
+    /* 指标数值颜色 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.2rem !important;
+        color: #212529 !important;
+        font-weight: 700;
+    }
+    
+    /* 指标标签颜色 */
+    [data-testid="stMetricLabel"] {
+        color: #6c757d !important;
+        font-size: 0.9rem;
+    }
+    
+    /* 涨跌幅颜色覆盖 (Streamlit默认会处理，这里增强一下) */
+    .green-text { color: #198754 !important; font-weight: bold; }
+    .red-text { color: #dc3545 !important; font-weight: bold; }
+    
+    /* 预测框特别样式 */
+    .pred-box {
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 10px;
+        text-align: center;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚡ BTDR 领航员 v5.0 Cloud")
+st.title("⚡ BTDR 领航员 v5.1 (Light)")
 
-# --- 1. 数据获取函数 ---
-@st.cache_data(ttl=60) # 缓存60秒，防止刷新太快被封
+# --- 2. 数据获取 (修复 BTC 问题) ---
+@st.cache_data(ttl=60) 
 def get_data():
-    # A. 获取 BTC
+    # A. 获取 BTC (改用 yfinance，避免Binance封锁IP)
     try:
-        btc_url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-        btc_res = requests.get(btc_url).json()
-        btc_chg = float(btc_res['priceChangePercent'])
-    except:
+        # 获取 BTC-USD 过去2天数据来计算涨跌
+        btc_ticker = yf.Ticker("BTC-USD")
+        # 只要最新2行
+        btc_hist = btc_ticker.history(period="2d")
+        
+        if len(btc_hist) >= 2:
+            current_btc = btc_hist['Close'].iloc[-1]
+            prev_btc = btc_hist['Close'].iloc[-2]
+            btc_chg = ((current_btc - prev_btc) / prev_btc) * 100
+        else:
+            btc_chg = 0.0
+    except Exception as e:
         btc_chg = 0.0
 
-    # B. 获取情绪指数
+    # B. 获取情绪指数 (Alternative.me API 通常不封IP，保留)
     try:
         fng_url = "https://api.alternative.me/fng/"
-        fng_res = requests.get(fng_url).json()
+        fng_res = requests.get(fng_url, timeout=5).json()
         fng_val = int(fng_res['data'][0]['value'])
     except:
-        fng_val = 50
+        fng_val = 50 # 默认中性
 
     # C. 获取股票数据 (BTDR + 5 Peers)
     tickers = ["BTDR", "MARA", "RIOT", "CORZ", "CLSK", "IREN"]
+    # 下载数据，progress=False 不显示进度条
     data = yf.download(tickers, period="5d", interval="1d", progress=False)
     
-    # 整理最新的涨跌幅
     quotes = {}
+    
+    # yfinance 返回的 DataFrame 可能是 MultiIndex，需要处理
+    # 结构通常是: data['Close']['BTDR']
+    
     for t in tickers:
         try:
-            # 获取最新价和昨收
-            # yfinance 的多层索引处理
-            current = data['Close'][t].iloc[-1]
-            prev = data['Close'][t].iloc[-2]
+            # 提取 Close 列
+            if isinstance(data.columns, pd.MultiIndex):
+                # 新版 yfinance
+                close_series = data.xs('Close', axis=1, level=0)[t]
+                open_series = data.xs('Open', axis=1, level=0)[t]
+            else:
+                # 旧版兼容
+                close_series = data['Close'][t]
+                open_series = data['Open'][t]
+
+            # 取最后两个有效值 (dropna)
+            valid_close = close_series.dropna()
             
-            # 如果是盘中，Close[-1] 是实时价；如果是盘前，这可能不准
-            # 为了简单，我们这里用 Close 计算涨跌。
-            # 实际上 Streamlit 部署在美区，yfinance 通常能拿延迟15分钟的数据
-            pct = ((current - prev) / prev) * 100
-            
-            # 获取 BTDR 的开盘价用于预测
-            open_price = 0
-            if t == "BTDR":
-                open_price = data['Open'][t].iloc[-1]
-            
-            quotes[t] = {
-                "price": current,
-                "pct": pct,
-                "prev": prev,
-                "open": open_price if t == "BTDR" else 0
-            }
-        except:
+            if len(valid_close) >= 2:
+                current = valid_close.iloc[-1]
+                prev = valid_close.iloc[-2]
+                pct = ((current - prev) / prev) * 100
+                
+                # BTDR 还需要开盘价
+                open_price = 0
+                if t == "BTDR":
+                    # 尝试取当天的 Open
+                    valid_open = open_series.dropna()
+                    if len(valid_open) > 0:
+                        open_price = valid_open.iloc[-1]
+                    else:
+                        open_price = current # 降级处理
+                
+                quotes[t] = {
+                    "price": current,
+                    "pct": pct,
+                    "prev": prev,
+                    "open": open_price if t == "BTDR" else 0
+                }
+            else:
+                quotes[t] = {"price":0, "pct":0, "prev":0, "open":0}
+        except Exception as e:
             quotes[t] = {"price":0, "pct":0, "prev":0, "open":0}
             
     return btc_chg, fng_val, quotes
 
-# --- 2. 实时训练 AI 模型 ---
-@st.cache_resource(ttl=3600) # 模型缓存在内存里1小时训练一次即可
+# --- 3. 实时训练模型 (保持不变) ---
+@st.cache_resource(ttl=3600)
 def train_model():
-    # 下载过去30天数据进行回归
     try:
         df = yf.download("BTDR", period="1mo", interval="1d", progress=False)
+        # 兼容 yfinance 新版 MultiIndex
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1) # 去掉 Ticker 层级
+            
         df['PrevClose'] = df['Close'].shift(1)
         df['OpenPct'] = (df['Open'] - df['PrevClose']) / df['PrevClose'] * 100
         df['HighPct'] = (df['High'] - df['PrevClose']) / df['PrevClose'] * 100
         df['LowPct'] = (df['Low'] - df['PrevClose']) / df['PrevClose'] * 100
-        
         df = df.dropna()
         
-        # 简单的一元回归 (为了稳健性，云端版只用 OpenPct 回归，BTC/Sector 作为外部修正)
         X = df[['OpenPct']]
-        y_high = df['HighPct']
-        y_low = df['LowPct']
-        
-        model_high = LinearRegression().fit(X, y_high)
-        model_low = LinearRegression().fit(X, y_low)
+        model_high = LinearRegression().fit(X, df['HighPct'])
+        model_low = LinearRegression().fit(X, df['LowPct'])
         
         return {
-            "high_coef": model_high.coef_[0],
-            "high_int": model_high.intercept_,
-            "low_coef": model_low.coef_[0],
-            "low_int": model_low.intercept_
+            "high_coef": model_high.coef_[0], "high_int": model_high.intercept_,
+            "low_coef": model_low.coef_[0], "low_int": model_low.intercept_
         }
     except:
-        # 默认参数 (如果下载失败)
         return {"high_coef": 0.67, "high_int": 4.29, "low_coef": 0.88, "low_int": -3.22}
 
-# --- 3. 主逻辑 ---
+# --- 4. 主程序逻辑 ---
 
-# 显示加载状态
-with st.spinner('正在连接华尔街数据中心...'):
+with st.spinner('正在同步全球市场数据...'):
     btc_chg, fng_val, quotes = get_data()
     model = train_model()
 
-# 计算板块溢价
-# 黄金组合: (MARA + RIOT + CORZ + CLSK + IREN) / 5
-peers_avg = (quotes['MARA']['pct'] + quotes['RIOT']['pct'] + quotes['CORZ']['pct'] + quotes['CLSK']['pct'] + quotes['IREN']['pct']) / 5
+# 计算
+peers_sum = 0
+count = 0
+for t in ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]:
+    if quotes[t]['price'] > 0:
+        peers_sum += quotes[t]['pct']
+        count += 1
+peers_avg = peers_sum / count if count > 0 else 0
 sector_alpha = peers_avg - btc_chg
-
-# 情绪修正
 sentiment_adj = (fng_val - 50) * 0.02
 
-# BTDR 数据
 btdr = quotes['BTDR']
-btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
+if btdr['price'] > 0:
+    btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
+    
+    pred_high_pct = model['high_int'] + (model['high_coef'] * btdr_open_pct) + (0.52 * btc_chg) + (0.25 * sector_alpha) + sentiment_adj
+    pred_low_pct = model['low_int'] + (model['low_coef'] * btdr_open_pct) + (0.52 * btc_chg) + (0.25 * sector_alpha) + sentiment_adj
+    
+    pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
+    pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
+else:
+    # 数据获取失败时的兜底
+    btdr_open_pct = 0
+    pred_high_price = 0
+    pred_low_price = 0
+    pred_high_pct = 0
+    pred_low_pct = 0
 
-# 预测计算
-# 公式: 基础回归 + BTC修正(0.52) + 板块Alpha(0.25) + 情绪修正
-beta_btc = 0.52
-beta_sector = 0.25
+# --- 5. 渲染界面 (使用原生 Metric 组件，自动适配白底) ---
 
-pred_high_pct = model['high_int'] + (model['high_coef'] * btdr_open_pct) + (beta_btc * btc_chg) + (beta_sector * sector_alpha) + sentiment_adj
-pred_low_pct = model['low_int'] + (model['low_coef'] * btdr_open_pct) + (beta_btc * btc_chg) + (beta_sector * sector_alpha) + sentiment_adj
-
-pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
-pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
-
-# --- 4. 界面渲染 ---
-
-# 第一排：BTC & 情绪
+# 第一排
 c1, c2 = st.columns(2)
 c1.metric("BTC 实时", f"{btc_chg:+.2f}%")
 c2.metric("恐慌指数", f"{fng_val}")
 
-# 第二排：板块五虎
-st.caption("矿股板块对标 (Sector Beta)")
+# 第二排
+st.markdown("##### ⚒️ 矿股板块 (Sector Beta)")
 cols = st.columns(5)
 peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
 for i, p in enumerate(peers):
-    cols[i].metric(p, f"{quotes[p]['pct']:+.1f}%", label_visibility="visible")
+    cols[i].metric(p, f"{quotes[p]['pct']:+.1f}%")
 
-# 第三排：BTDR 本体
+# 第三排
 st.markdown("---")
 c3, c4 = st.columns(2)
 c3.metric("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%")
-c4.metric("今日开盘", f"${btdr['open']:.2f}")
+c4.metric("今日开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%")
 
-# 第四排：预测结果 (重点高亮)
-st.markdown("### 🤖 AI 今日预测")
+# 第四排：预测 (使用自定义 HTML 渲染好看的色块)
+st.markdown("### 🎯 AI 预测")
+
+# 定义颜色样式
+bg_high = "#d1e7dd" # 浅绿背景
+text_high = "#0f5132" # 深绿字
+bg_low = "#f8d7da" # 浅红背景
+text_low = "#842029" # 深红字
+
 col_h, col_l = st.columns(2)
 
 with col_h:
-    st.success(f"阻力位: ${pred_high_price:.2f}")
-    st.caption(f"预期涨幅: {pred_high_pct:+.2f}%")
+    st.markdown(f"""
+    <div class="pred-box" style="background-color: {bg_high}; color: {text_high}; border: 1px solid #badbcc;">
+        <div style="font-size: 0.9rem;">阻力位 (High)</div>
+        <div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div>
+        <div style="font-size: 0.8rem;">预期: {pred_high_pct:+.2f}%</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 with col_l:
-    st.error(f"支撑位: ${pred_low_price:.2f}")
-    st.caption(f"预期涨幅: {pred_low_pct:+.2f}%")
+    st.markdown(f"""
+    <div class="pred-box" style="background-color: {bg_low}; color: {text_low}; border: 1px solid #f5c2c7;">
+        <div style="font-size: 0.9rem;">支撑位 (Low)</div>
+        <div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div>
+        <div style="font-size: 0.8rem;">预期: {pred_low_pct:+.2f}%</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.caption(f"模型参数: High_Beta={model['high_coef']:.2f}, Low_Beta={model['low_coef']:.2f} | 实时回归")
+st.caption(f"数据源: Yahoo Finance (延迟约1-15分钟) | 模型: 实时线性回归 | 刷新时间: {pd.Timestamp.now().strftime('%H:%M:%S')}")
