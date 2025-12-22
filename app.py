@@ -8,15 +8,14 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v7.2", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v7.3", layout="centered")
 
-# 5秒刷新 (后台静默执行)
+# 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 极简风格 + 视觉防抖
+# CSS 样式
 st.markdown("""
     <style>
-    /* 基础重置 */
     html { overflow-y: scroll; }
     .stApp > header { display: none; }
     .stApp { margin-top: -30px; background-color: #ffffff; }
@@ -27,29 +26,26 @@ st.markdown("""
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important; 
     }
     
-    /* Metric 卡片：更宽松的内边距，移除拥挤感 */
     div[data-testid="stMetric"] {
         background-color: #f8f9fa !important;
         border: 1px solid #e9ecef;
-        border-radius: 12px; /* 更圆润 */
+        border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02);
         height: 90px;
         display: flex; flex-direction: column; justify-content: center;
         overflow: hidden;
     }
     
-    /* BTDR 价格大卡片：清爽设计 */
     .btdr-box {
         height: 95px;
-        background-color: #fff; /* 白底突出 */
+        background-color: #fff;
         border: 1px solid #e9ecef;
         border-radius: 12px;
         padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.04); /* 浮起感 */
+        box-shadow: 0 4px 12px rgba(0,0,0,0.04);
     }
 
-    /* 预测框容器：防抖核心 */
     .pred-container-wrapper {
         height: 110px; width: 100%; display: block;
     }
@@ -59,43 +55,44 @@ st.markdown("""
         transition: all 0.3s ease;
     }
     
-    /* 顶部时间栏 */
     .time-bar {
         font-size: 0.75rem; color: #999; text-align: center;
-        margin-bottom: 20px; /* 增加底部间距，防止挤 */
-        padding: 6px; 
+        margin-bottom: 20px; padding: 6px; 
         background: #fafafa; border-radius: 6px;
     }
     
-    /* 状态小圆点 (替代大标签) */
     .status-dot {
         height: 6px; width: 6px; border-radius: 50%; display: inline-block; 
         margin-left: 6px; vertical-align: middle; margin-bottom: 2px;
     }
-    .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }   /* 盘前橙 */
-    .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; }   /* 盘中绿 */
-    .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; }  /* 盘后蓝 */
-    .dot-closed { background-color: #adb5bd; }                              /* 休市灰 */
-    
+    .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }
+    .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; }
+    .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; }
+    .dot-closed { background-color: #adb5bd; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 状态管理 ---
+# --- 2. 状态管理与热修复 ---
 if 'data_cache' not in st.session_state:
     st.session_state['data_cache'] = None
 
-# 标题
-st.markdown("### ⚡ BTDR 领航员 v7.2")
+# 【v7.3 关键修复】检查缓存版本
+# 如果缓存存在，但里面没有 'model' 字段（说明是旧版缓存），强制清空
+if st.session_state['data_cache'] is not None:
+    if 'model' not in st.session_state['data_cache']:
+        st.session_state['data_cache'] = None
+        st.rerun() # 立即重启脚本，防止报错
 
-# --- 3. UI 骨架 (防抖占位) ---
+# 标题
+st.markdown("### ⚡ BTDR 领航员 v7.3")
+
+# --- 3. UI 骨架 ---
 ph_time = st.empty()
 
-# 核心指标
 c1, c2 = st.columns(2)
 with c1: ph_btc = st.empty()
 with c2: ph_fng = st.empty()
 
-# 板块 (间距优化)
 st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 st.caption("⚒️ 矿股板块 Beta")
 cols = st.columns(5)
@@ -103,12 +100,10 @@ ph_peers = [col.empty() for col in cols]
 
 st.markdown("---")
 
-# BTDR 本体
 c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-# 预测区域
 st.markdown("### 🎯 AI 托管预测")
 col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
@@ -117,10 +112,9 @@ with col_l: ph_pred_low = st.empty()
 st.markdown("---")
 ph_footer = st.empty()
 
-# --- 4. 核心逻辑：AI 自动调参系统 ---
-@st.cache_data(ttl=3600)  # 每 1 小时重新训练一次，无需用户干预
+# --- 4. 核心逻辑：AI 自动调参 ---
+@st.cache_data(ttl=3600)
 def auto_tune_model():
-    # 默认黄金参数 (兜底用)
     default_model = {
         "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
         "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
@@ -128,13 +122,9 @@ def auto_tune_model():
     }
     
     try:
-        # 下载过去1个月的 BTDR 日线数据进行回归
         df = yf.download("BTDR", period="1mo", interval="1d", progress=False)
+        if len(df) < 10: return default_model, "数据不足"
         
-        # 数据清洗
-        if len(df) < 10: return default_model # 数据太少，不训练
-        
-        # 兼容 yfinance 多级索引
         if isinstance(df.columns, pd.MultiIndex):
             df = df.xs('BTDR', axis=1, level=1)
             
@@ -142,38 +132,29 @@ def auto_tune_model():
         df['PrevClose'] = df['Close'].shift(1)
         df = df.dropna()
         
-        # 计算百分比变化
-        # X: 开盘跳空幅度
         x = ((df['Open'] - df['PrevClose']) / df['PrevClose'] * 100).values
-        # Y_High: 最高冲高幅度
         y_high = ((df['High'] - df['PrevClose']) / df['PrevClose'] * 100).values
-        # Y_Low: 最低杀跌幅度
         y_low = ((df['Low'] - df['PrevClose']) / df['PrevClose'] * 100).values
         
-        # 简单线性回归 (y = mx + b)
-        # 即使没有 sklearn，用 numpy 也能算
-        
-        # 1. High 模型
+        # High Model
         cov_h = np.cov(x, y_high)
-        beta_h = cov_h[0, 1] / cov_h[0, 0]
+        beta_h = cov_h[0, 1] / cov_h[0, 0] if cov_h[0, 0] != 0 else 0.67
         intercept_h = np.mean(y_high) - beta_h * np.mean(x)
         
-        # 2. Low 模型
+        # Low Model
         cov_l = np.cov(x, y_low)
-        beta_l = cov_l[0, 1] / cov_l[0, 0]
+        beta_l = cov_l[0, 1] / cov_l[0, 0] if cov_l[0, 0] != 0 else 0.88
         intercept_l = np.mean(y_low) - beta_l * np.mean(x)
         
-        # 安全锁 (Safety Clip): 防止参数因某天异常数据而跑偏
-        # 比如 Beta 不应小于 0 (高开理应对应更高的阻力位)，也不应大于 1.5 (太敏感)
+        # Safety Clip
         beta_h = np.clip(beta_h, 0.3, 1.2)
         beta_l = np.clip(beta_l, 0.4, 1.5)
         
-        # 平滑处理：新参数 = 70% 黄金参数 + 30% AI参数 (避免突变)
         final_model = {
             "high": {
                 "intercept": 0.7 * 4.29 + 0.3 * intercept_h,
                 "beta_open": 0.7 * 0.67 + 0.3 * beta_h,
-                "beta_btc": 0.52 # BTC 相关性保持固定，因为这个很难单变量回归
+                "beta_btc": 0.52
             },
             "low": {
                 "intercept": 0.7 * -3.22 + 0.3 * intercept_l,
@@ -184,12 +165,16 @@ def auto_tune_model():
         }
         return final_model, "已自适应"
         
-    except Exception as e:
+    except Exception:
         return default_model, "默认参数"
 
 # --- 5. 渲染函数 ---
 def render_ui(data):
     if not data: return
+    
+    # 【v7.3 修复】再次进行安全检查，确保字段存在
+    if 'model' not in data: return 
+    
     quotes = data['quotes']
     fng_val = data['fng']
     model_params = data['model']
@@ -198,7 +183,6 @@ def render_ui(data):
     btc_chg = quotes['BTC-USD']['pct']
     btdr = quotes['BTDR']
     
-    # 时间
     tz_bj = pytz.timezone('Asia/Shanghai')
     tz_ny = pytz.timezone('America/New_York')
     now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
@@ -206,16 +190,13 @@ def render_ui(data):
     
     ph_time.markdown(f"<div class='time-bar'>北京 {now_bj} &nbsp;|&nbsp; 美东 {now_ny} &nbsp;|&nbsp; AI {model_status}</div>", unsafe_allow_html=True)
     
-    # 指标
     ph_btc.metric("BTC (全时段)", f"{btc_chg:+.2f}%")
     ph_fng.metric("恐慌指数", f"{fng_val}")
     
-    # 板块
     peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
     for i, p in enumerate(peers):
         if p in quotes: ph_peers[i].metric(p, f"{quotes[p]['pct']:+.1f}%")
             
-    # 计算预测 (使用 AI 算出的 model_params)
     valid_peers = [p for p in peers if quotes[p]['price'] > 0]
     peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers) if valid_peers else 0
     sector_alpha = peers_avg - btc_chg
@@ -233,7 +214,6 @@ def render_ui(data):
         pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
         pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
 
-    # BTDR 价格卡片 (优化版：状态用小圆点)
     state_map = {"PRE": "dot-pre", "REG": "dot-reg", "POST": "dot-post", "CLOSED": "dot-closed"}
     dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
     state_text = btdr.get('tag', 'CLOSED')
@@ -250,7 +230,6 @@ def render_ui(data):
     
     ph_btdr_open.metric("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%")
     
-    # 预测框
     h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
 
@@ -290,26 +269,23 @@ def get_data_v72():
         
         for sym in symbols:
             try:
-                # 安全提取
                 df_day = daily[sym] if sym in daily else pd.DataFrame()
                 if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
                 
                 df_min = live[sym] if sym in live else pd.DataFrame()
                 if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
                 
-                # A. 实时价 & 状态判定
+                # A. 实时价
                 state = "CLOSED"
                 if not df_min.empty:
                     current_price = df_min['Close'].iloc[-1]
-                    # 简单状态判断：如果当前时间在美股盘中(9:30-16:00 ET)，则 REG，否则看有没有数据变动
-                    # 这里为了简化，直接根据是否有分钟线更新来默认
                     state = "REG" 
                 elif not df_day.empty:
                     current_price = df_day['Close'].iloc[-1]
                 else:
                     current_price = 0
                 
-                # B. 昨收 (修正版)
+                # B. 昨收
                 prev_close = 1.0
                 if not df_day.empty:
                     last_date = df_day.index[-1].date()
@@ -337,16 +313,17 @@ def get_data_v72():
 
 # --- 7. 执行流 ---
 
-# 先渲染旧数据
-if st.session_state['data_cache']: 
+# 如果有有效缓存，先渲染
+if st.session_state['data_cache'] and 'model' in st.session_state['data_cache']: 
     render_ui(st.session_state['data_cache'])
+else:
+    ph_time.info("📡 正在升级 AI 内核...")
 
-# 异步获取新数据 & 模型
+# 获取数据
 new_quotes = get_data_v72()
 ai_model, ai_status = auto_tune_model()
 
 if new_quotes:
-    # 简单的 fng
     try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
     except: fng = 50
     
