@@ -1,19 +1,19 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
 import requests
+import pandas as pd
+import time
 
-# --- 1. 页面配置与美化 (保持白底风格) ---
-st.set_page_config(page_title="BTDR Pilot v5.2", layout="centered")
+# --- 1. 页面配置 ---
+st.set_page_config(page_title="BTDR Pilot v5.3", layout="centered")
 
 st.markdown("""
     <style>
     .stApp {background-color: #f8f9fa;}
-    h1, h2, h3, div, p {color: #212529 !important;}
+    h1, h2, h3, div, p, span {color: #212529 !important;}
     div[data-testid="stMetric"] {
         background-color: #ffffff !important;
         border: 1px solid #e9ecef;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     [data-testid="stMetricValue"] {font-weight: 700; color: #212529 !important;}
     [data-testid="stMetricLabel"] {color: #6c757d !important;}
@@ -24,120 +24,111 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("⚡ BTDR 领航员 v5.2 (一致性修正)")
+st.title("⚡ BTDR 领航员 v5.3 (原生接口版)")
 
-# --- 2. 核心模型：直接复用插件的“黄金参数” ---
-# 这是您觉得最准的那一套参数，不再让服务器乱算
+# --- 2. 黄金参数 (保持不变) ---
 MODEL = {
     "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
     "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
-    "beta_sector": 0.25  # 板块权重
+    "beta_sector": 0.25
 }
 
-# --- 3. 数据获取 ---
-@st.cache_data(ttl=30) # 30秒刷新一次
-def get_data():
-    # A. 获取 BTC (yfinance)
-    try:
-        btc = yf.Ticker("BTC-USD").history(period="2d")
-        if len(btc) >= 2:
-            btc_chg = ((btc['Close'].iloc[-1] - btc['Close'].iloc[-2]) / btc['Close'].iloc[-2]) * 100
-        else:
-            btc_chg = 0.0
-    except:
-        btc_chg = 0.0
+# --- 3. 核心数据获取 (完全模拟 JS 插件) ---
+# 抛弃 yfinance 库，直接请求 Yahoo 原生 API，确保数据源 100% 一致
 
-    # B. 获取情绪 (API)
+def fetch_yahoo_raw(symbol):
+    """
+    完全复刻插件中的 fetchQuote 函数逻辑
+    """
+    try:
+        t = int(time.time() * 1000)
+        # 必须加 User-Agent，否则 Yahoo API 会拒绝 Python 请求
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&useYfid=true&_={t}"
+        
+        resp = requests.get(url, headers=headers, timeout=5)
+        data = resp.json()
+        
+        meta = data['chart']['result'][0]['meta']
+        
+        current = meta['regularMarketPrice']
+        prev_close = meta['chartPreviousClose']
+        # 优先用 regularMarketOpen，如果为0或空(盘前)，则回退到 current (和插件逻辑一致)
+        open_price = meta.get('regularMarketOpen', current)
+        if open_price is None: open_price = current
+
+        pct = ((current - prev_close) / prev_close) * 100
+        
+        return {
+            "price": current,
+            "pct": pct,
+            "prev": prev_close,
+            "open": open_price
+        }
+    except Exception as e:
+        # print(f"Error fetching {symbol}: {e}")
+        return {"price": 0, "pct": 0, "prev": 0, "open": 0}
+
+@st.cache_data(ttl=10) # 10秒刷新，保证即时性
+def get_all_data():
+    # 1. 获取 BTC (使用 Yahoo 原生接口替代 Binance，以绕过封锁并保持计算逻辑一致)
+    # 注意：Yahoo 的涨跌是"日内涨跌"，Binance 是"24h滚动"。
+    # 为了完全一致，建议插件端也改用 fetchQuote('BTC-USD')
+    btc_data = fetch_yahoo_raw("BTC-USD")
+    btc_chg = btc_data['pct']
+
+    # 2. 获取情绪
     try:
         fng = requests.get("https://api.alternative.me/fng/", timeout=3).json()
         fng_val = int(fng['data'][0]['value'])
     except:
         fng_val = 50
 
-    # C. 获取股票 (BTDR + 5 Peers)
+    # 3. 获取所有股票 (串行或并发均可，Python requests 是同步的，这里直接循环)
     tickers = ["BTDR", "MARA", "RIOT", "CORZ", "CLSK", "IREN"]
-    data = yf.download(tickers, period="5d", interval="1d", progress=False)
-    
     quotes = {}
     for t in tickers:
-        try:
-            # 兼容 yfinance 不同版本的数据结构
-            if isinstance(data.columns, pd.MultiIndex):
-                closes = data.xs('Close', axis=1, level=0)[t].dropna()
-                opens = data.xs('Open', axis=1, level=0)[t].dropna()
-            else:
-                closes = data['Close'][t].dropna()
-                opens = data['Open'][t].dropna()
-
-            if len(closes) >= 2:
-                curr = closes.iloc[-1]
-                prev = closes.iloc[-2]
-                pct = ((curr - prev) / prev) * 100
-                
-                # BTDR 开盘价逻辑
-                open_val = 0
-                if t == "BTDR":
-                    if len(opens) > 0:
-                        # 优先取今日开盘，如果没有(盘前)则用当前价
-                        # 注意：yf 在盘中 open 数据有时会有延迟，这里做容错
-                        open_val = opens.iloc[-1]
-                        # 如果 API 返回的 Open 日期比 Close 日期老，说明今日还没 Open 数据
-                        if opens.index[-1] < closes.index[-1]:
-                           open_val = curr 
-                    else:
-                        open_val = curr
-
-                quotes[t] = {"price": curr, "pct": pct, "prev": prev, "open": open_val}
-            else:
-                quotes[t] = {"price":0, "pct":0, "prev":0, "open":0}
-        except:
-            quotes[t] = {"price":0, "pct":0, "prev":0, "open":0}
+        quotes[t] = fetch_yahoo_raw(t)
             
     return btc_chg, fng_val, quotes
 
-# --- 4. 主计算逻辑 (完全复刻 JS 插件逻辑) ---
+# --- 4. 主逻辑 (完全一致的数学公式) ---
 
-with st.spinner('正在同步数据...'):
-    btc_chg, fng_val, quotes = get_data()
+with st.spinner('正在通过原生接口同步...'):
+    btc_chg, fng_val, quotes = get_all_data()
 
-# 计算板块 Beta (5只股票平均)
+# 板块 Alpha 计算
 peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
-peers_sum = sum([quotes[p]['pct'] for p in peers if quotes[p]['price'] > 0])
-peers_count = sum([1 for p in peers if quotes[p]['price'] > 0])
-peers_avg = peers_sum / peers_count if peers_count > 0 else 0
+valid_peers = [p for p in peers if quotes[p]['price'] > 0]
+if valid_peers:
+    peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers)
+else:
+    peers_avg = 0
 
-# 关键：板块 Alpha 计算
 sector_alpha = peers_avg - btc_chg
-
-# 情绪修正
 sentiment_adj = (fng_val - 50) * 0.02
 
-# BTDR 数据准备
+# BTDR 计算
 btdr = quotes['BTDR']
 if btdr['price'] > 0 and btdr['prev'] > 0:
-    # 计算开盘涨跌幅 (核心输入)
+    # 核心：Open Pct 计算
     btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
     
-    # --- 核心公式 (直接使用 MODEL 常量，不再训练) ---
-    
-    # High 预测
+    # 公式计算
     pred_high_pct = (MODEL['high']['intercept'] 
                      + (MODEL['high']['beta_open'] * btdr_open_pct) 
                      + (MODEL['high']['beta_btc'] * btc_chg) 
                      + (MODEL['beta_sector'] * sector_alpha) 
                      + sentiment_adj)
     
-    # Low 预测
     pred_low_pct = (MODEL['low']['intercept'] 
                     + (MODEL['low']['beta_open'] * btdr_open_pct) 
                     + (MODEL['low']['beta_btc'] * btc_chg) 
                     + (MODEL['beta_sector'] * sector_alpha) 
                     + sentiment_adj)
     
-    # 价格换算
     pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
     pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
-    
 else:
     btdr_open_pct = 0
     pred_high_price = 0
@@ -145,43 +136,39 @@ else:
     pred_high_pct = 0
     pred_low_pct = 0
 
-# --- 5. 渲染界面 ---
+# --- 5. 渲染 ---
 
-# 头部数据
 c1, c2 = st.columns(2)
-c1.metric("BTC 实时", f"{btc_chg:+.2f}%")
+# 使用 BTC-USD 替代 Binance 数据
+c1.metric("BTC (Yahoo源)", f"{btc_chg:+.2f}%") 
 c2.metric("恐慌指数", f"{fng_val}")
 
-# 矿股板块
-st.markdown("##### ⚒️ 矿股板块 (Sector Beta)")
+st.markdown("##### ⚒️ 矿股板块")
 cols = st.columns(5)
 for i, p in enumerate(peers):
     cols[i].metric(p, f"{quotes[p]['pct']:+.1f}%")
 
 st.markdown("---")
 
-# BTDR 数据
 c3, c4 = st.columns(2)
 c3.metric("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%")
 c4.metric("今日开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%")
 
-# 预测结果展示
-st.markdown("### 🎯 AI 预测 (黄金参数版)")
+st.markdown("### 🎯 AI 预测")
+col_h, col_l = st.columns(2)
 
-# 颜色定义
+# 颜色
 bg_high = "#d1e7dd"
 text_high = "#0f5132"
 bg_low = "#f8d7da"
 text_low = "#842029"
-
-col_h, col_l = st.columns(2)
 
 with col_h:
     st.markdown(f"""
     <div class="pred-box" style="background-color: {bg_high}; color: {text_high}; border: 1px solid #badbcc;">
         <div style="font-size: 0.9rem;">阻力位 (High)</div>
         <div style="font-size: 1.6rem; font-weight: bold;">${pred_high_price:.2f}</div>
-        <div style="font-size: 0.85rem;">预期涨幅: {pred_high_pct:+.2f}%</div>
+        <div style="font-size: 0.85rem;">预期: {pred_high_pct:+.2f}%</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -190,9 +177,9 @@ with col_l:
     <div class="pred-box" style="background-color: {bg_low}; color: {text_low}; border: 1px solid #f5c2c7;">
         <div style="font-size: 0.9rem;">支撑位 (Low)</div>
         <div style="font-size: 1.6rem; font-weight: bold;">${pred_low_price:.2f}</div>
-        <div style="font-size: 0.85rem;">预期涨幅: {pred_low_pct:+.2f}%</div>
+        <div style="font-size: 0.85rem;">预期: {pred_low_pct:+.2f}%</div>
     </div>
     """, unsafe_allow_html=True)
 
 st.markdown("---")
-st.caption("ℹ️ 模型说明：已强制对齐 Chrome 插件 v4.3 核心算法。使用人工校准的黄金参数，剔除实时训练噪音。")
+st.caption("ℹ️ 已启用 Yahoo 原生接口模式。")
