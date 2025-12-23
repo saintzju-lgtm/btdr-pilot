@@ -10,43 +10,35 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.6", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.7", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 磐石级防抖 (Anti-Jitter Rock Solid)
+# CSS: 针对 v8.5 的特定修补
 st.markdown("""
     <style>
-    /* 1. 全局滚动条，防止因内容长短变化导致的左右抖动 */
+    /* 全局防抖 */
     html { overflow-y: scroll; }
-    
     .stApp > header { display: none; }
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
+    /* 【关键修复】强制锁定 Altair 图表容器高度，防止刷新时塌陷 */
+    div[data-testid="stAltairChart"] {
+        height: 350px !important; 
+        min-height: 350px !important;
+        overflow: hidden !important;
+        display: block !important;
+    }
+    /* 隐藏加载动画 */
+    canvas { transition: none !important; animation: none !important; }
+    
+    /* 字体与卡片样式 */
     h1, h2, h3, div, p, span { 
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 2. 【核心修复】强力锁定图表外层容器 */
-    /* 只要是包含 chart 的容器，强制最小高度，防止渲染瞬间塌陷 */
-    div[data-testid="stVerticalBlock"] > div:has(div[data-testid="stAltairChart"]) {
-        min-height: 320px !important;
-        height: 320px !important;
-        overflow: hidden !important;
-        display: block !important;
-    }
-    
-    div[data-testid="stAltairChart"] {
-        height: 320px !important;
-        width: 100% !important;
-    }
-    
-    /* 3. 隐藏加载时的闪烁动画 */
-    canvas { animation: none !important; transition: none !important; }
-    
-    /* 指标卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
@@ -56,7 +48,6 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* 因子小卡片 */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
@@ -99,9 +90,9 @@ def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v8.6")
+st.markdown("### ⚡ BTDR 领航员 v8.7")
 
-# --- 4. UI 骨架 (Layout) ---
+# --- 4. UI 骨架 ---
 ph_time = st.empty()
 
 c1, c2 = st.columns(2)
@@ -118,14 +109,12 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-# 日内预测
 st.markdown("### 🎯 日内阻力/支撑 (Intraday)")
 col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
 with col_l: ph_pred_low = st.empty()
 
 st.markdown("---")
-
 st.markdown("### 🌍 宏观环境 (Macro)")
 macro_cols = st.columns(4)
 ph_macros = [col.empty() for col in macro_cols]
@@ -135,12 +124,12 @@ micro_cols = st.columns(4)
 ph_micros = [col.empty() for col in micro_cols]
 
 st.markdown("### ☁️ 宗师级推演 (P90-P50-P10)")
-# 图表占位符 (通过CSS强制锁定高度)
+# 预留好位置
 ph_chart = st.empty()
 
 ph_footer = st.empty()
 
-# --- 5. 核心：宗师级量化引擎 ---
+# --- 5. 核心：宗师级量化引擎 (v8.5 Logic) ---
 @st.cache_data(ttl=300) 
 def run_grandmaster_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
@@ -213,7 +202,6 @@ def render_ui(data):
     fng_val = data['fng']
     model_params = data['model']
     factors = data['factors']
-    model_status = data['status']
     
     btc_chg = quotes['BTC-USD']['pct']
     qqq_chg = quotes.get('QQQ', {'pct': 0})['pct']
@@ -278,7 +266,7 @@ def render_ui(data):
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     ph_micros[3].markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est), unsafe_allow_html=True)
 
-    # --- 宗师级蒙特卡洛 (Grandmaster MC) ---
+    # --- 宗师级蒙特卡洛 (Grandmaster MC) [Tooltip & Jitter 修复] ---
     if btdr['price'] > 0:
         vol = factors['vol_base']
         drift = drift_est
@@ -305,7 +293,7 @@ def render_ui(data):
         p50 = np.percentile(paths, 50, axis=0)
         p10 = np.percentile(paths, 10, axis=0)
         
-        # 宽表数据 (确保 Tooltip 正确显示)
+        # 1. 构建宽表数据
         chart_data = []
         for d in range(days_ahead + 1):
             chart_data.append({
@@ -316,34 +304,34 @@ def render_ui(data):
             })
         df_chart = pd.DataFrame(chart_data)
         
-        # --- Altair 绘图 (Tooltip 修复) ---
+        # 2. 绘图：使用 Nearest Selector + Rule 捕捉
         base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
         
-        # 1. 区域 (Range P10-P90)
+        # 区域
         area = base.mark_area(opacity=0.2, color='#4dabf7').encode(
             y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)),
             y2='P90'
         )
         
-        # 2. 三条线 (P90/P50/P10)
+        # 线条
         l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
-        l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
+        l50 = base.mark_line(color='#228be6').encode(y='P50')
         l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
         
-        # 3. 隐形触发器 (Nearest Selector)
-        # 使用 selection_point(nearest=True) 确保鼠标靠近 X 轴任意位置都能触发 Tooltip
+        # 【关键】隐形选择器
+        # nearest=True: 鼠标在任何地方，只要对齐X轴就触发
         nearest = alt.selection_point(nearest=True, on='mouseover', fields=['Day'], empty=False)
         
-        # 隐形点，用于捕捉鼠标事件
-        selectors = base.mark_point().encode(
-            x='Day:O',
-            opacity=alt.value(0),
+        # 隐形竖线，作为捕捉目标
+        selectors = base.mark_rule(opacity=0).encode(
+            x='Day:O'
         ).add_params(nearest)
         
-        # 4. 显示点 (只有选中时才显示的小黑点)
+        # 显示点 (只在 hover 时显示)
         points = base.mark_circle(size=60, color="black").encode(
             y='P50',
             opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+            # 【关键】这里定义 Tooltip 内容和格式 (.2f)
             tooltip=[
                 alt.Tooltip('Day', title='T+'),
                 alt.Tooltip('P90', title='P90 (High)', format='.2f'),
@@ -352,12 +340,12 @@ def render_ui(data):
             ]
         )
         
-        # 组合图表
-        chart = (area + l90 + l50 + l10 + selectors + points).properties(height=280).interactive()
+        # 组合
+        chart = (area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive()
         
         ph_chart.altair_chart(chart, use_container_width=True)
 
-    ph_footer.caption(f"Engine: v8.6 Rock-Solid | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    ph_footer.caption(f"Engine: v8.7 Grandmaster Fixed | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
