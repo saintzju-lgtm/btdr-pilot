@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v7.8", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v7.9", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 保持 UI 统一 (增加因子面板样式)
+# CSS: 保持 UI 统一 (增加宏观面板样式)
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -37,11 +37,14 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    .factor-box {
+    /* 宏观因子小卡片 */
+    .macro-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 8px; text-align: center;
+        height: 80px; display: flex; flex-direction: column; justify-content: center;
     }
-    .factor-title { font-size: 0.7rem; color: #888; }
-    .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; }
+    .macro-title { font-size: 0.7rem; color: #888; }
+    .macro-val { font-size: 1.2rem; font-weight: bold; color: #495057; }
+    .macro-sub { font-size: 0.75rem; font-weight: 600; }
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; }
@@ -55,8 +58,7 @@ st.markdown("""
 
 # --- 2. 状态管理 ---
 if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
-# 缓存自检
-if st.session_state['data_cache'] and 'factors' not in st.session_state['data_cache']:
+if st.session_state['data_cache'] and 'macro' not in st.session_state['data_cache']:
     st.session_state['data_cache'] = None
     st.rerun()
 
@@ -70,10 +72,12 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     <div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>
     """
 
-def factor_html(title, val):
-    return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div></div>"""
+def macro_html(title, val, delta_str, delta_val):
+    color_class = "color-up" if delta_val >= 0 else "color-down"
+    if title == "VIX (恐慌)": color_class = "color-down" if delta_val >= 0 else "color-up" # VIX涨是坏事
+    return f"""<div class="macro-box"><div class="macro-title">{title}</div><div class="macro-val">{val}</div><div class="macro-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v7.8")
+st.markdown("### ⚡ BTDR 领航员 v7.9")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -93,18 +97,19 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
+# 宏观仪表盘
+st.markdown("### 🌍 宏观全视之眼 (Macro)")
+m1, m2, m3, m4 = st.columns(4)
+ph_macros = [m1.empty(), m2.empty(), m3.empty(), m4.empty()]
+
 # 日内预测
-st.markdown("### 🎯 日内阻力/支撑 (Intraday)")
+st.markdown("### 🎯 日内阻力/支撑")
 col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
 with col_l: ph_pred_low = st.empty()
 
-# 多因子量化推演
-st.markdown("### 🧠 多因子量化推演 (Quant MC)")
-# 因子展示栏
-f1, f2, f3, f4 = st.columns(4)
-ph_factors = [f1.empty(), f2.empty(), f3.empty(), f4.empty()]
-
+# 动态推演
+st.markdown("### 📈 动态趋势推演 (Dynamic MC)")
 ph_chart = st.empty()
 col_mc1, col_mc2 = st.columns(2)
 with col_mc1: ph_mc_bull = st.empty()
@@ -113,79 +118,41 @@ with col_mc2: ph_mc_bear = st.empty()
 st.markdown("---")
 ph_footer = st.empty()
 
-# --- 5. 核心量化引擎 (Quant Engine) ---
-@st.cache_data(ttl=3600) # 1小时重新计算一次因子
-def run_quant_analytics():
+# --- 5. 核心：宏观量化引擎 ---
+@st.cache_data(ttl=300) # 5分钟更新一次宏观因子，但实时数据5秒刷
+def run_macro_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
-    default_factors = {"rsi": 50, "beta": 1.5, "vol": 0.05, "drift": 0}
+    default_macro = {"beta_btc": 1.5, "beta_qqq": 1.2, "vol_base": 0.05}
     
     try:
-        # 1. 获取数据 (BTDR + BTC) 过去90天
-        # 使用 threads=True 加速
-        data = yf.download("BTDR BTC-USD", period="3mo", interval="1d", group_by='ticker', threads=True, progress=False)
+        # 下载 BTDR, BTC, QQQ (纳指), ^VIX (恐慌)
+        data = yf.download("BTDR BTC-USD QQQ ^VIX", period="3mo", interval="1d", group_by='ticker', threads=True, progress=False)
         
-        # 提取数据
         btdr = data['BTDR'].dropna()
         btc = data['BTC-USD'].dropna()
+        qqq = data['QQQ'].dropna()
         
-        # 对齐索引
-        common_index = btdr.index.intersection(btc.index)
-        btdr = btdr.loc[common_index]
-        btc = btc.loc[common_index]
+        # 对齐数据
+        idx = btdr.index.intersection(btc.index).intersection(qqq.index)
+        btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
         
-        # --- A. 计算因子 ---
-        
-        # 1. 动态 Beta (Rolling 60 days)
-        # 计算 BTDR 和 BTC 的收益率
+        # 1. 计算双 Beta (BTC & QQQ)
         ret_btdr = btdr['Close'].pct_change()
         ret_btc = btc['Close'].pct_change()
+        ret_qqq = qqq['Close'].pct_change()
         
-        covariance = ret_btdr.rolling(window=60).cov(ret_btc)
-        variance = ret_btc.rolling(window=60).var()
-        rolling_beta = covariance / variance
-        current_beta = rolling_beta.iloc[-1]
-        if np.isnan(current_beta): current_beta = 1.8 # 默认值
+        cov_btc = ret_btdr.rolling(60).cov(ret_btc).iloc[-1]
+        var_btc = ret_btc.rolling(60).var().iloc[-1]
+        beta_btc = cov_btc / var_btc if var_btc != 0 else 1.5
         
-        # 2. RSI (14 days)
-        delta = btdr['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+        cov_qqq = ret_btdr.rolling(60).cov(ret_qqq).iloc[-1]
+        var_qqq = ret_qqq.rolling(60).var().iloc[-1]
+        beta_qqq = cov_qqq / var_qqq if var_qqq != 0 else 1.2
         
-        # 3. 波动率 (EWMA - 指数加权，近期权重更大)
-        # 使用 span=10，相当于更看重最近10天的波动
-        volatility = ret_btdr.ewm(span=10).std().iloc[-1]
+        # 2. 基础波动率
+        vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
         
-        # 4. 趋势漂移 (Drift) - 结合 BTC 趋势
-        # 如果 BTC 处于 20日均线之上，drift 为正，否则为负
-        btc_ma20 = btc['Close'].rolling(window=20).mean().iloc[-1]
-        btc_current = btc['Close'].iloc[-1]
-        
-        # 基础漂移 (BTDR 自身动量)
-        base_drift = ret_btdr.mean() 
-        
-        # BTC 修正漂移
-        btc_trend_adjust = 0.002 if btc_current > btc_ma20 else -0.002
-        
-        # RSI 均值回归修正 (Mean Reversion)
-        # RSI > 70 视为超买，向下修正; RSI < 30 超卖，向上修正
-        rsi_adjust = 0
-        if rsi > 70: rsi_adjust = -0.005 
-        elif rsi < 30: rsi_adjust = 0.005
-        
-        final_drift = base_drift + (btc_trend_adjust * current_beta) + rsi_adjust
-        
-        factors = {
-            "rsi": rsi,
-            "beta": current_beta,
-            "vol": volatility,
-            "drift": final_drift,
-            "btc_trend": "Bull" if btc_current > btc_ma20 else "Bear"
-        }
-        
-        # --- B. 更新日内模型 (Regression) ---
-        # 保持之前的回归逻辑，不再赘述
+        # 3. 日内参数计算 (回归)
         df_reg = btdr.tail(30).copy()
         df_reg['PrevClose'] = df_reg['Close'].shift(1)
         df_reg = df_reg.dropna()
@@ -201,34 +168,39 @@ def run_quant_analytics():
             "beta_sector": 0.25
         }
         
-        return final_model, factors, "Quant Active"
+        macro_factors = {
+            "beta_btc": beta_btc,
+            "beta_qqq": beta_qqq,
+            "vol_base": vol_base
+        }
         
-    except Exception as e:
-        return default_model, default_factors, "Offline Mode"
+        return final_model, macro_factors, "Macro Active"
+        
+    except: return default_model, default_macro, "Offline"
 
 # --- 6. 渲染函数 ---
 def render_ui(data):
-    if not data or 'factors' not in data: return
+    if not data or 'macro' not in data: return
 
     quotes = data['quotes']
     fng_val = data['fng']
     model_params = data['model']
-    factors = data['factors']
+    macro_factors = data['macro']
     model_status = data['status']
     
     btc_chg = quotes['BTC-USD']['pct']
+    qqq_chg = quotes.get('QQQ', {'pct': 0})['pct']
+    vix_val = quotes.get('^VIX', {'price': 20})['price']
+    vix_chg = quotes.get('^VIX', {'pct': 0})['pct']
     btdr = quotes['BTDR']
     
-    # 时间
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
-    ph_time.markdown(f"<div class='time-bar'>美东时间 {now_ny} &nbsp;|&nbsp; 核心: {model_status}</div>", unsafe_allow_html=True)
+    ph_time.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 引擎: {model_status}</div>", unsafe_allow_html=True)
     
-    # 顶部指标
     ph_btc.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
     ph_fng.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
     
-    # 板块
     peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
     for i, p in enumerate(peers):
         if p in quotes:
@@ -241,11 +213,12 @@ def render_ui(data):
     status_tag = f"<span class='status-dot {dot_class}'></span>"
     ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # 日内预测计算 (略，保持不变)
+    # 日内预测
     valid_peers = [p for p in peers if quotes[p]['price'] > 0]
     peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers) if valid_peers else 0
     sector_alpha = peers_avg - btc_chg
     sentiment_adj = (fng_val - 50) * 0.02
+    
     if btdr['price'] > 0:
         btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
         MODEL = model_params
@@ -260,84 +233,76 @@ def render_ui(data):
         ph_pred_high.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">日内阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div></div></div>""", unsafe_allow_html=True)
         ph_pred_low.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">日内支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # --- 渲染因子面板 ---
-    ph_factors[0].markdown(factor_html("RSI (14d)", f"{factors['rsi']:.1f}"), unsafe_allow_html=True)
-    ph_factors[1].markdown(factor_html("Beta (vs BTC)", f"{factors['beta']:.2f}"), unsafe_allow_html=True)
-    ph_factors[2].markdown(factor_html("Implied Vol", f"{factors['vol']*100:.1f}%"), unsafe_allow_html=True)
-    drift_pct = factors['drift'] * 100
-    ph_factors[3].markdown(factor_html("Drift/Day", f"{drift_pct:+.2f}%"), unsafe_allow_html=True)
+    # --- 渲染宏观面板 (New) ---
+    ph_macros[0].markdown(macro_html("QQQ (纳指)", f"{qqq_chg:+.2f}%", "Market", qqq_chg), unsafe_allow_html=True)
+    ph_macros[1].markdown(macro_html("VIX (恐慌)", f"{vix_val:.2f}", f"{vix_chg:+.1f}%", -vix_chg), unsafe_allow_html=True) # VIX涨是坏，用反色逻辑
+    ph_macros[2].markdown(macro_html("Beta (QQQ)", f"{macro_factors['beta_qqq']:.2f}", "Sensitivity", 0), unsafe_allow_html=True)
+    ph_macros[3].markdown(macro_html("Beta (BTC)", f"{macro_factors['beta_btc']:.2f}", "Correlation", 0), unsafe_allow_html=True)
 
-    # --- 渲染多因子蒙特卡洛 (Advanced MC) ---
+    # --- 动态趋势推演 (Dynamic MC) ---
     if btdr['price'] > 0:
-        vol = factors['vol']
-        drift = factors['drift'] # 这是一个经过RSI和BTC趋势修正过的漂移值
-        current = btdr['price']
+        vol = macro_factors['vol_base']
+        beta_b = macro_factors['beta_btc']
+        beta_q = macro_factors['beta_qqq']
         
-        simulations = 500 # 增加模拟次数
+        # 核心算法：实时消息面修正
+        # Drift = 历史漂移(0) + (BTC今日涨跌 * Beta) + (QQQ今日涨跌 * Beta)
+        # 如果 VIX > 30，说明市场极度恐慌，强制增加下行压力
+        
+        realtime_drift = (btc_chg/100 * beta_b * 0.5) + (qqq_chg/100 * beta_q * 0.5)
+        
+        # VIX 修正：VIX越高，波动率越大，下行风险越大
+        vix_impact = max(0, (vix_val - 20) * 0.001) # VIX每高1点，日下行漂移增加0.1%
+        realtime_drift -= vix_impact
+        
+        # 波动率修正：VIX高，波动率必须放大
+        realtime_vol = vol * (1 + max(0, (vix_val - 15)/30))
+
+        simulations = 500
         days_ahead = 5
         paths = []
+        current = btdr['price']
         
         for i in range(simulations):
             path = [current]
             p = current
             for d in range(days_ahead):
-                # GBM: S_t = S_{t-1} * exp((mu - 0.5*sigma^2) + sigma*Z)
+                # 随机漫步 + 实时Drift
                 shock = np.random.normal(0, 1)
-                change = (drift - 0.5 * vol**2) + vol * shock
+                change = (realtime_drift - 0.5 * realtime_vol**2) + realtime_vol * shock
                 p = p * np.exp(change)
                 path.append(p)
             paths.append(path)
             
         paths = np.array(paths)
-        p90 = np.percentile(paths, 90, axis=0) # 乐观
-        p50 = np.percentile(paths, 50, axis=0) # 中性
-        p10 = np.percentile(paths, 10, axis=0) # 悲观
+        p90 = np.percentile(paths, 90, axis=0)
+        p50 = np.percentile(paths, 50, axis=0)
+        p10 = np.percentile(paths, 10, axis=0)
         
         chart_df = []
         for d in range(days_ahead + 1):
-            chart_df.append({"Day": d, "Price": p50[d], "Type": "P50 (中位数)"})
+            chart_df.append({"Day": d, "Price": p50[d], "Type": "P50 (中性)"})
             chart_df.append({"Day": d, "Price": p90[d], "Type": "P90 (乐观)"})
             chart_df.append({"Day": d, "Price": p10[d], "Type": "P10 (悲观)"})
-            
         df_chart = pd.DataFrame(chart_df)
         
-        # 扇形图 (Fan Chart)
         base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
+        area = base.mark_area(opacity=0.3, color='#4dabf7').encode(y=alt.Y('Price', scale=alt.Scale(zero=False)), y2='Price_Low').transform_filter(alt.FieldOneOfPredicate(field='Type', oneOf=['P90 (乐观)'])).transform_lookup(lookup='Day', from_=alt.LookupData(df_chart[df_chart['Type'] == 'P10 (悲观)'], 'Day', ['Price']), as_=['Price_Low'])
+        lines = base.mark_line().encode(y='Price', color=alt.Color('Type', scale=alt.Scale(domain=['P90 (乐观)', 'P50 (中性)', 'P10 (悲观)'], range=['#0ca678', '#228be6', '#fa5252'])))
+        ph_chart.altair_chart((area + lines).properties(height=220).interactive(), use_container_width=True)
         
-        # 80% 置信区间 (P10-P90)
-        area = base.mark_area(opacity=0.3, color='#4dabf7').encode(
-            y=alt.Y('Price', title='价格分布 (USD)', scale=alt.Scale(zero=False)),
-            y2='Price_Low'
-        ).transform_filter(
-            alt.FieldOneOfPredicate(field='Type', oneOf=['P90 (乐观)'])
-        ).transform_lookup(
-            lookup='Day',
-            from_=alt.LookupData(df_chart[df_chart['Type'] == 'P10 (悲观)'], 'Day', ['Price']),
-            as_=['Price_Low']
-        )
-        
-        lines = base.mark_line().encode(
-            y='Price',
-            color=alt.Color('Type', scale=alt.Scale(domain=['P90 (乐观)', 'P50 (中位数)', 'P10 (悲观)'], range=['#0ca678', '#228be6', '#fa5252'])),
-            tooltip=['Day', 'Price', 'Type']
-        )
-        
-        chart = (area + lines).properties(height=240).interactive()
-        ph_chart.altair_chart(chart, use_container_width=True)
-        
-        # 结果卡片
         p90_end = p90[-1]; p90_pct = (p90_end - current)/current * 100
         p10_end = p10[-1]; p10_pct = (p10_end - current)/current * 100
-        
         ph_mc_bull.markdown(card_html("P90 乐观边界", f"${p90_end:.2f}", f"{p90_pct:+.1f}%", p90_pct), unsafe_allow_html=True)
         ph_mc_bear.markdown(card_html("P10 悲观边界", f"${p10_end:.2f}", f"{p10_pct:+.1f}%", p10_pct), unsafe_allow_html=True)
 
-    ph_footer.caption(f"Risk Model: Multivariate MC | Simulations: 500 | Drift Adjusted")
+    ph_footer.caption(f"Engine: Macro-Quant v7.9 | VIX Impact: {'Active' if vix_val>20 else 'Stable'} | Market Drift: {realtime_drift*100:.2f}%")
 
-# --- 7. 数据获取 ---
+# --- 7. 数据获取 (含宏观数据) ---
 @st.cache_data(ttl=5)
-def get_data_v78():
-    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
+def get_data_v79():
+    # 增加 QQQ 和 ^VIX
+    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     try:
         daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
         live = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
@@ -371,14 +336,14 @@ def get_data_v78():
     except: return None
 
 # --- 8. 执行流 ---
-if st.session_state['data_cache'] and 'factors' in st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
-else: ph_time.info("📡 正在加载量化因子...")
+if st.session_state['data_cache'] and 'macro' in st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
+else: ph_time.info("📡 正在连接纳斯达克交易所...")
 
-new_quotes = get_data_v78()
-ai_model, ai_factors, ai_status = run_quant_analytics()
+new_quotes = get_data_v79()
+ai_model, ai_macro, ai_status = run_macro_analytics()
 
 if new_quotes:
     try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
     except: fng = 50
-    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'factors': ai_factors, 'status': ai_status}
+    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'macro': ai_macro, 'status': ai_status}
     render_ui(st.session_state['data_cache'])
