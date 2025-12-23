@@ -9,7 +9,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v10.0 Alpha", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v10.1 Sniper", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -34,7 +34,6 @@ CUSTOM_CSS = """
         display: flex; flex-direction: column; justify-content: center;
     }
     
-    /* v10.0 新增：矿股详细卡片样式 */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -101,17 +100,23 @@ CUSTOM_CSS = """
     .bar-kalman { background-color: #228be6; width: 50%; }
     .bar-hist { background-color: #fab005; width: 30%; }
     .bar-mom { background-color: #fa5252; width: 20%; }
+    
+    /* Sniper Signal CSS */
+    .signal-box { border-radius: 8px; padding: 10px; margin-bottom: 10px; text-align: center; font-weight: bold; color: white; }
+    .sig-buy { background-color: #0ca678; box-shadow: 0 2px 8px rgba(12, 166, 120, 0.3); }
+    .sig-sell { background-color: #e03131; box-shadow: 0 2px 8px rgba(224, 49, 49, 0.3); }
+    .sig-wait { background-color: #adb5bd; color: #495057; border: 1px solid #dee2e6; }
+    .signal-label { font-size: 0.8rem; opacity: 0.9; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
+    .signal-main { font-size: 1.4rem; }
+    
+    .rr-bar-bg { height: 6px; width: 100%; background: #e9ecef; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
+    .rr-bar-fill { height: 100%; background: #228be6; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 2. 基础配置 (Shares for Turnover) ---
-# 预估流通股本 (单位: M/百万股) - 用于快速计算换手率，避免实时请求 API 卡顿
-# 数据更新至 2024年底
-MINER_SHARES = {
-    "MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, 
-    "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100
-}
+# --- 2. 基础配置 ---
+MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
 # --- 3. 辅助函数 ---
@@ -130,18 +135,9 @@ def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=Fa
 
 def miner_card_html(sym, price, pct, turnover):
     color_class = "color-up" if pct >= 0 else "color-down"
-    return f"""
-    <div class="miner-card">
-        <div class="miner-sym">{sym}</div>
-        <div class="miner-price ${color_class}">${price:.2f}</div>
-        <div class="miner-sub">
-            <span class="miner-pct {color_class}">{pct:+.1f}%</span>
-            <span class="miner-turn">换 {turnover:.1f}%</span>
-        </div>
-    </div>
-    """
+    return f"""<div class="miner-card"><div class="miner-sym">{sym}</div><div class="miner-price ${color_class}">${price:.2f}</div><div class="miner-sub"><span class="miner-pct {color_class}">{pct:+.1f}%</span><span class="miner-turn">换 {turnover:.1f}%</span></div></div>"""
 
-# --- 4. 核心计算 (Kalman + Ensemble + Sector Correlation) ---
+# --- 4. 核心计算 ---
 def run_kalman_filter(y, x, delta=1e-4):
     n = len(y); beta = np.zeros(n); P = np.zeros(n); beta[0]=1.0; P[0]=1.0; R=0.002; Q=delta/(1-delta)
     for t in range(1, n):
@@ -158,12 +154,11 @@ def run_grandmaster_analytics():
         "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
         "ensemble_hist_h": 0.05, "ensemble_hist_l": -0.05,
         "ensemble_mom_h": 0.08, "ensemble_mom_l": -0.08,
-        "top_peers": ["MARA", "RIOT", "CLSK", "CORZ", "IREN"] # Default fallback
+        "top_peers": ["MARA", "RIOT", "CLSK", "CORZ", "IREN"]
     }
     default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05}
 
     try:
-        # Download expanded pool for correlation check
         tickers_str = "BTDR BTC-USD QQQ " + " ".join(MINER_POOL)
         data = yf.download(tickers_str, period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
         if data.empty: return default_model, default_factors, "No Data"
@@ -174,32 +169,26 @@ def run_grandmaster_analytics():
         
         if len(btdr) < 30: return default_model, default_factors, "Insufficient Data"
 
-        # --- Sector Alpha: 动态优选相关性最高的矿股 ---
+        # Sector Correlation
         correlations = {}
         for m in MINER_POOL:
             if m in data:
-                miner_df = data[m]['Close'].pct_change().tail(30) # 最近30天相关性
+                miner_df = data[m]['Close'].pct_change().tail(30)
                 btdr_df = btdr['Close'].pct_change().tail(30)
-                # 对齐数据
                 common_idx = miner_df.index.intersection(btdr_df.index)
-                if len(common_idx) > 10:
-                    corr = miner_df.loc[common_idx].corr(btdr_df.loc[common_idx])
-                    correlations[m] = corr
-                else:
-                    correlations[m] = 0
-        # 排序并取 Top 5
+                if len(common_idx) > 10: correlations[m] = miner_df.loc[common_idx].corr(btdr_df.loc[common_idx])
+                else: correlations[m] = 0
         top_peers = sorted(correlations, key=correlations.get, reverse=True)[:5]
         default_model["top_peers"] = top_peers
 
-        # --- 核心指标计算 ---
+        # Factors
         ret_btdr = btdr['Close'].pct_change().fillna(0).values
         ret_btc = btc['Close'].pct_change().fillna(0).values
         ret_qqq = qqq['Close'].pct_change().fillna(0).values
         
         beta_btc = run_kalman_filter(ret_btdr, ret_btc, delta=1e-4)
         beta_qqq = run_kalman_filter(ret_btdr, ret_qqq, delta=1e-4)
-        beta_btc = np.clip(beta_btc, -1, 5)
-        beta_qqq = np.clip(beta_qqq, -1, 4)
+        beta_btc = np.clip(beta_btc, -1, 5); beta_qqq = np.clip(beta_qqq, -1, 4)
 
         pv = (btdr['Close'] * btdr['Volume'])
         vwap_30d = pv.tail(30).sum() / btdr['Volume'].tail(30).sum()
@@ -226,7 +215,7 @@ def run_grandmaster_analytics():
 
         factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, "adx": adx, "regime": "Trend" if adx > 25 else "Chop", "rsi": rsi, "vol_base": vol_base, "atr_ratio": atr_ratio}
 
-        # WLS Regression
+        # WLS
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
         df_reg['High'] = btdr['High']; df_reg['Low'] = btdr['Low']
@@ -248,11 +237,9 @@ def run_grandmaster_analytics():
             "low": {"intercept": theta_l[0], "beta_gap": theta_l[1], "beta_btc": theta_l[2], "beta_vol": theta_l[3]},
             "ensemble_hist_h": df_reg['Target_High'].tail(10).mean(), "ensemble_hist_l": df_reg['Target_Low'].tail(10).mean(),
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
-            "top_peers": top_peers # Updated dynamic peers
+            "top_peers": top_peers
         }
-        
-        return final_model, factors, "v10.0 Alpha"
-
+        return final_model, factors, "v10.1 Sniper"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -268,7 +255,6 @@ def determine_market_state(now_ny):
     return "Overnight", "dot-night"
 
 def get_realtime_data():
-    # 始终获取全量矿股数据，以便展示
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
     try:
@@ -283,21 +269,13 @@ def get_realtime_data():
                 df_day = daily[sym].dropna(subset=['Close']) if sym in daily else pd.DataFrame()
                 df_min = live[sym].dropna(subset=['Close']) if sym in live else pd.DataFrame()
                 
-                # 获取 volume
                 current_volume = 0
                 if not df_min.empty: 
                     current_price = df_min['Close'].iloc[-1]
-                    # 简单估算当日累计成交量 (如果yfinance没返回cum volume，就用最近bar的vol近似活跃度，或者日线的vol)
-                    # 为了展示换手率，最好用日线的Volume，如果是盘中，用Live的累加有点难，这里简化取日线Volume
-                    # 如果是盘前，日线Volume可能是0或者昨天的。
-                    # 策略：如果 live 有数据且时间是今天，尝试累加 live volume (比较耗时)，
-                    # 或者简单点：直接读取 yfinance返回的 'Volume' 列的最后一个有效值
-                    if 'Volume' in df_min.columns: current_volume = df_min['Volume'].sum() # 这是一个近似的分钟级累加
+                    if 'Volume' in df_min.columns: current_volume = df_min['Volume'].sum()
                 elif not df_day.empty: 
-                    current_price = df_day['Close'].iloc[-1]
-                    current_volume = df_day['Volume'].iloc[-1]
-                else: 
-                    current_price = 0.0
+                    current_price = df_day['Close'].iloc[-1]; current_volume = df_day['Volume'].iloc[-1]
+                else: current_price = 0.0
 
                 prev_close = 1.0; open_price = 0.0; is_open_today = False
                 if not df_day.empty:
@@ -306,17 +284,11 @@ def get_realtime_data():
                         is_open_today = True; open_price = df_day['Open'].iloc[-1]
                         if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
                         else: prev_close = df_day['Open'].iloc[-1]
-                    else:
-                        prev_close = df_day['Close'].iloc[-1]; open_price = prev_close
+                    else: prev_close = df_day['Close'].iloc[-1]; open_price = prev_close
                 
                 pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                quotes[sym] = {
-                    "price": current_price, "pct": pct, "prev": prev_close, 
-                    "open": open_price, "volume": current_volume, # Store volume
-                    "tag": state_tag, "css": state_css, "is_open_today": is_open_today
-                }
-            except:
-                quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "tag": "ERR", "css": "dot-closed", "is_open_today": False}
+                quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "volume": current_volume, "tag": state_tag, "css": state_css, "is_open_today": is_open_today}
+            except: quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "tag": "ERR", "css": "dot-closed", "is_open_today": False}
         
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=0.8).json()['data'][0]['value'])
         except: fng = 50
@@ -328,17 +300,10 @@ def get_realtime_data():
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
     ai_model, factors, ai_status = run_grandmaster_analytics()
-    
-    if not quotes:
-        st.warning("📡 连接中 (Initializing)...")
-        time.sleep(1)
-        st.rerun()
-        return
+    if not quotes: st.warning("📡 连接中 (Initializing)..."); time.sleep(1); st.rerun(); return
 
-    btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0})
-    qqq = quotes.get('QQQ', {'pct': 0})
-    vix = quotes.get('^VIX', {'price': 20, 'pct': 0})
-    btdr = quotes.get('BTDR', {'price': 0})
+    btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
+    vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
 
     # Pre-calc
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
@@ -357,21 +322,14 @@ def show_live_dashboard():
     
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    # --- 🛠️ 矿股板块 (动态 Top 5 + 换手率) ---
+    # Miner Peers
     st.caption("⚒️ 矿股板块 Beta (Correlation Top 5)")
     cols = st.columns(5)
-    
-    # 获取动态计算出的 Top 5
     top_peers = ai_model.get("top_peers", ["MARA", "RIOT", "CLSK", "CORZ", "IREN"])
-    
     for i, p in enumerate(top_peers):
         data = quotes.get(p, {'pct': 0, 'price': 0, 'volume': 0})
-        # 计算换手率: (成交量 / 流通股本) * 100
-        # 如果是盘前盘后，成交量可能比较小，属于正常现象
-        shares_m = MINER_SHARES.get(p, 200) # 默认2亿股防止报错
+        shares_m = MINER_SHARES.get(p, 200)
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
-        
-        # 渲染新卡片
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
             
     st.markdown("---")
@@ -385,35 +343,80 @@ def show_live_dashboard():
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # Ensemble Prediction
-    current_gap_pct = 0.0
-    if btdr['price'] > 0: current_gap_pct = ((btdr['price'] - btdr['prev']) / btdr['prev'])
-    else: current_gap_pct = ((btdr['open'] - btdr['prev']) / btdr['prev'])
-    
-    btdr_open_pct = current_gap_pct
+    # Prediction
+    current_gap_pct = ((btdr['price'] - btdr['prev']) / btdr['prev']) if btdr['price'] > 0 else ((btdr['open'] - btdr['prev']) / btdr['prev'])
     btc_pct_factor = btc['pct'] / 100; vol_state_factor = factors['atr_ratio'] 
     mh, ml = ai_model['high'], ai_model['low']
     
-    pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * btdr_open_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
-    pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * btdr_open_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
+    pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
+    pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
     w_k, w_h, w_m = 0.5, 0.3, 0.2
     final_h_ret = (w_k * pred_h_kalman) + (w_h * ai_model['ensemble_hist_h']) + (w_m * ai_model['ensemble_mom_h'])
     final_l_ret = (w_k * pred_l_kalman) + (w_h * ai_model['ensemble_hist_l']) + (w_m * ai_model['ensemble_mom_l'])
-    
-    sentiment_adj = (fng_val - 50) * 0.0005
-    final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
+    sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
+
+    # --- 🔫 Sniper Trading Signal Logic ---
+    curr_p = btdr['price']
     
-    st.markdown("### 🎯 集成预测 (Ensemble Prediction)")
-    st.markdown("""<div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;"><span>🟦 Kalman (50%)</span><span>🟨 History (30%)</span><span>🟥 Momentum (20%)</span></div><div class="ensemble-bar"><div class="bar-kalman"></div><div class="bar-hist"></div><div class="bar-mom"></div></div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
+    # 1. 计算距离
+    dist_to_high = ((p_high - curr_p) / curr_p) * 100
+    dist_to_low = ((curr_p - p_low) / curr_p) * 100
+    
+    # 2. 生成信号
+    signal_txt = "WAIT / HOLD"
+    signal_css = "sig-wait"
+    
+    # 强买：跌破支撑 + RSI超卖
+    if curr_p <= p_low * 1.01:
+        if factors['rsi'] < 35: signal_txt = "STRONG BUY (Oversold)"; signal_css = "sig-buy"
+        else: signal_txt = "BUY ZONE (Support)"; signal_css = "sig-buy"
+    # 强卖：突破阻力 + RSI超买
+    elif curr_p >= p_high * 0.99:
+        if factors['rsi'] > 65: signal_txt = "STRONG SELL (Overbought)"; signal_css = "sig-sell"
+        else: signal_txt = "SELL ZONE (Resist)"; signal_css = "sig-sell"
+    # 中间态
+    else:
+        # 靠近支撑
+        if dist_to_low < 1.5: signal_txt = "WATCH BUY"; signal_css = "sig-wait"
+        # 靠近阻力
+        elif dist_to_high < 1.5: signal_txt = "WATCH SELL"; signal_css = "sig-wait"
+
+    # 3. 盈亏比 (Reward/Risk)
+    # 假设此时做多，止损在 Low，止盈在 High
+    risk = curr_p - p_low
+    reward = p_high - curr_p
+    rr_ratio = reward / risk if risk > 0.01 else 0
+    rr_width = min(max((rr_ratio / 5) * 100, 5), 100) # 视觉条百分比
+    
+    st.markdown("### 🔫 狙击手信号 (Sniper Signals)")
+    sc1, sc2 = st.columns([1.5, 1])
+    with sc1:
+        st.markdown(f"""
+        <div class="signal-box {signal_css}">
+            <div class="signal-label">TRADING SIGNAL</div>
+            <div class="signal-main">{signal_txt}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with sc2:
+        st.markdown(f"""
+        <div style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:10px; height:100%;">
+            <div style="font-size:0.75rem; color:#888;">做多盈亏比 (R/R Ratio)</div>
+            <div style="font-size:1.2rem; font-weight:bold; color:#212529;">1 : {rr_ratio:.2f}</div>
+            <div class="rr-bar-bg"><div class="rr-bar-fill" style="width:{rr_width}%"></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Prediction Cards
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > p_low else "#ffffff"
-    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
-    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
+    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div><div style="font-size:0.7rem;">空间: {dist_to_high:.1f}%</div></div></div>""", unsafe_allow_html=True)
+    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div><div style="font-size:0.7rem;">空间: {dist_to_low:.1f}%</div></div></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
+    # Macro
     st.markdown("### 🌍 宏观环境 (Macro)")
     ma1, ma2, ma3, ma4 = st.columns(4)
     with ma1: st.markdown(factor_html("QQQ (纳指)", f"{qqq['pct']:+.2f}%", "Market", qqq['pct'], "科技股大盘风向标。"), unsafe_allow_html=True)
@@ -421,6 +424,7 @@ def show_live_dashboard():
     with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
     with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
 
+    # Micro
     st.markdown("### 🔬 微观结构 (Micro)")
     mi1, mi2, mi3, mi4 = st.columns(4)
     rsi_val = factors['rsi']; rsi_status = "O/B" if rsi_val > 70 else ("O/S" if rsi_val < 30 else "Neu")
@@ -429,7 +433,7 @@ def show_live_dashboard():
     with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "预测波动率 (基于 EWM Std)。"), unsafe_allow_html=True)
     with mi4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "当日预期动能"), unsafe_allow_html=True)
     
-    st.markdown("### ☁️ 概率推演 (Student-t + Mean Reversion)")
+    st.markdown("### ☁️ 概率推演 (Student-t)")
     current_vol = factors['vol_base']; long_term_vol = 0.05; drift = drift_est
     sims, days, dt = 1500, 5, 1
     price_paths = np.zeros((sims, days + 1)); price_paths[:, 0] = btdr['price']
@@ -447,11 +451,8 @@ def show_live_dashboard():
     l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
-    nearest = alt.selection_point(nearest=True, on='mouseover', fields=['Day'], empty=False)
-    points = base.mark_circle(size=60, color="black").encode(y='P50', opacity=alt.condition(nearest, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Day'), alt.Tooltip('P90'), alt.Tooltip('P50'), alt.Tooltip('P10')])
-    st.altair_chart((area + l90 + l50 + l10 + base.mark_rule(opacity=0).encode(x='Day').add_params(nearest) + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.0 Alpha | Sector: Dynamic Correlation")
+    st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
+    st.caption(f"Engine: v10.1 Sniper | Signal: Dynamic Zone")
 
-# --- 7. 主程序 ---
-st.markdown("### ⚡ BTDR 领航员 v10.0 Alpha")
+st.markdown("### ⚡ BTDR 领航员 v10.1 Sniper")
 show_live_dashboard()
