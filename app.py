@@ -5,10 +5,10 @@ import numpy as np
 import time
 import requests
 import altair as alt
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import pytz
 
-# --- 1. 页面配置 & CSS样式 ---
+# --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="BTDR Pilot v9.6 Quant", layout="centered")
 
 CUSTOM_CSS = """
@@ -18,15 +18,18 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* 图表高度锁定 */
+    h1, h2, h3, div, p, span { 
+        color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
+    }
+    
     div[data-testid="stAltairChart"] {
         height: 320px !important; min-height: 320px !important;
         overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     
-    /* 卡片样式 */
     .metric-card {
-        background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
+        background-color: #f8f9fa; border: 1px solid #e9ecef;
+        border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
     }
@@ -34,19 +37,37 @@ CUSTOM_CSS = """
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* 因子样式 */
     .factor-box {
-        background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
+        background: #fff;
+        border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02); position: relative; cursor: help;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02); position: relative; cursor: help; transition: transform 0.1s;
     }
-    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; }
+    .factor-box:hover { border-color: #ced4da; transform: translateY(-1px); }
+    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    .color-up { color: #0ca678; } .color-down { color: #d6336c; }
+    .tooltip-text {
+        visibility: hidden;
+        width: 180px; background-color: rgba(33, 37, 41, 0.95);
+        color: #fff !important; text-align: center; border-radius: 6px; padding: 8px;
+        position: absolute; z-index: 999;
+        bottom: 110%; left: 50%; margin-left: -90px;
+        opacity: 0; transition: opacity 0.3s; font-size: 0.7rem !important;
+        font-weight: normal; line-height: 1.4; pointer-events: none;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .tooltip-text::after {
+        content: "";
+        position: absolute; top: 100%; left: 50%; margin-left: -5px;
+        border-width: 5px; border-style: solid;
+        border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
+    }
+    .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     
-    /* 状态点 */
+    .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
+    
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px; }
     .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }
     .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; }
@@ -54,16 +75,17 @@ CUSTOM_CSS = """
     .dot-night { background-color: #7048e8; box-shadow: 0 0 4px #7048e8; }
     .dot-closed { background-color: #adb5bd; }
     
-    /* 预测框 */
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
     
     .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
+    .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
+    .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 2. 辅助函数 ---
+# --- 2. HELPERS ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     delta_html = ""
     if delta_str:
@@ -71,139 +93,170 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
         delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     return f"""<div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
-def factor_html(title, val, delta_str, delta_val, reverse_color=False):
+def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
     is_positive = delta_val >= 0
     if reverse_color: is_positive = not is_positive
     color_class = "color-up" if is_positive else "color-down"
-    return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
+    return f"""
+    <div class="factor-box">
+        <div class="tooltip-text">{tooltip_text}</div>
+        <div class="factor-title">{title}</div>
+        <div class="factor-val">{val}</div>
+        <div class="factor-sub {color_class}">{delta_str}</div>
+    </div>
+    """
 
-# --- 3. 核心计算逻辑 (修复版 Quant Engine) ---
+# --- 3. CORE ANALYTICS (Optimized) ---
 @st.cache_data(ttl=600)
-def run_quant_analytics():
-    # 1. 定义完整的默认值，防止 KeyError
+def run_grandmaster_analytics():
+    # Defaults
     default_model = {
-        "up_scenario": {"h_add": 0.05, "l_add": -0.02},
-        "down_scenario": {"h_add": 0.02, "l_add": -0.05},
-        "beta_btc": 0.6
+        "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
+        "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0}
     }
-    default_factors = {
-        "vwap": 0, 
-        "adx": 20, 
-        "regime": "Neutral", 
-        "beta_btc": 1.5, 
-        "rsi": 50, 
-        "vol_parkinson": 0.05,  # 确保包含此键
-        "jump_prob": 0.1        # 确保包含此键
-    }
-    
+    default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05}
+
     try:
-        # 2. 下载数据 (threads=False 提高稳定性)
-        data = yf.download("BTDR BTC-USD QQQ", period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
+        # Fetch Data (Daily)
+        data = yf.download("BTDR BTC-USD QQQ", period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
         
-        if data.empty: 
-            return default_model, default_factors, "No Data"
+        if data.empty: return default_model, default_factors, "No Data"
 
-        # 安全提取
-        try:
-            btdr = data['BTDR'].dropna()
-            btc = data['BTC-USD'].dropna()
-        except KeyError:
-            return default_model, default_factors, "Ticker Err"
+        # Align Data
+        btdr = data['BTDR'].dropna()
+        btc = data['BTC-USD'].dropna()
+        qqq = data['QQQ'].dropna()
+        
+        idx = btdr.index.intersection(btc.index).intersection(qqq.index)
+        btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
+        
+        if len(btdr) < 30: return default_model, default_factors, "Insufficient Data"
 
-        if len(btdr) < 30: return default_model, default_factors, "Low Data"
-
-        # --- 计算开始 ---
-        # 3. Beta (Rolling)
+        # --- Factor Calculations ---
+        # 1. Beta
         ret_btdr = btdr['Close'].pct_change()
         ret_btc = btc['Close'].pct_change()
-        # 对齐索引
-        idx = ret_btdr.index.intersection(ret_btc.index)
-        cov_btc = ret_btdr.loc[idx].rolling(60).cov(ret_btc.loc[idx]).iloc[-1]
-        var_btc = ret_btc.loc[idx].rolling(60).var().iloc[-1]
+        ret_qqq = qqq['Close'].pct_change()
+        
+        cov_btc = ret_btdr.rolling(60).cov(ret_btc).iloc[-1]
+        var_btc = ret_btc.rolling(60).var().iloc[-1]
         beta_btc = cov_btc / var_btc if var_btc > 1e-6 else 1.5
         
-        # 4. Parkinson Volatility (基于 High/Low 的更精准波动率)
+        cov_qqq = ret_btdr.rolling(60).cov(ret_qqq).iloc[-1]
+        var_qqq = ret_qqq.rolling(60).var().iloc[-1]
+        beta_qqq = cov_qqq / var_qqq if var_qqq > 1e-6 else 1.2
+
+        # 2. VWAP
+        pv = (btdr['Close'] * btdr['Volume'])
+        vwap_30d = pv.tail(30).sum() / btdr['Volume'].tail(30).sum()
+
+        # 3. ADX & Volatility
         high, low, close = btdr['High'], btdr['Low'], btdr['Close']
-        # 避免 Log(0) 或除零
-        safe_high = high.replace(0, np.nan)
-        safe_low = low.replace(0, np.nan)
-        vol_parkinson = np.sqrt(1 / (4 * np.log(2)) * ((np.log(safe_high / safe_low)) ** 2)).rolling(20).mean().iloc[-1]
-        if np.isnan(vol_parkinson): vol_parkinson = 0.05
-        
-        # 5. ADX
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
-        adx_val = 20
-        if len(tr) > 14:
-            adx_raw = tr.rolling(14).mean().iloc[-1]
-            if not np.isnan(adx_raw): adx_val = min(max(adx_raw, 0), 100) # Clamp
-        regime = "Trend" if adx_val > 25 else "Chop"
+        atr = tr.rolling(14).mean()
         
-        # 6. RSI
+        # ADX Logic
+        up, down = high.diff(), -low.diff()
+        plus_dm = np.where((up > down) & (up > 0), up, 0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0)
+        plus_di = 100 * (pd.Series(plus_dm, index=btdr.index).rolling(14).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm, index=btdr.index).rolling(14).mean() / atr)
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.rolling(14).mean().iloc[-1]
+        adx = 20 if np.isnan(adx) else adx
+
+        # RSI
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = -delta.where(delta < 0, 0).rolling(14).mean()
-        rsi = 50
-        if loss.iloc[-1] != 0:
-            rsi = 100 - (100 / (1 + gain.iloc[-1]/loss.iloc[-1]))
-            
-        # 7. Asymmetric Regression (非对称回归)
-        # 简单根据历史 Gap Up/Down 计算预期强度
-        df_reg = btdr.tail(60).copy()
-        df_reg['PrevClose'] = df_reg['Close'].shift(1)
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+        
+        # Volatility Base (EWM Std)
+        vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
+        atr_ratio = (atr / close).iloc[-1]
+
+        factors = {
+            "beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, 
+            "adx": adx, "regime": "Trend" if adx > 25 else "Chop", 
+            "rsi": rsi, "vol_base": vol_base, "atr_ratio": atr_ratio
+        }
+
+        # --- OPTIMIZATION: Multivariate Weighted Least Squares (WLS) ---
+        # Data Prep for Regression
+        df_reg = pd.DataFrame()
+        df_reg['PrevClose'] = btdr['Close'].shift(1)
+        df_reg['Open'] = btdr['Open']
+        df_reg['High'] = btdr['High']
+        df_reg['Low'] = btdr['Low']
+        
+        # Features (X)
+        # 1. Gap: (Open - PrevClose) / PrevClose
+        df_reg['Gap'] = (df_reg['Open'] - df_reg['PrevClose']) / df_reg['PrevClose']
+        # 2. BTC Return (Contemporaneous proxy using daily close, ideal is pre-mkt but using aligned daily)
+        df_reg['BTC_Ret'] = btc['Close'].pct_change()
+        # 3. Volatility State: (High - Low) / Open of PREVIOUS day (lagged)
+        df_reg['Vol_State'] = ((btdr['High'] - btdr['Low']) / btdr['Open']).shift(1)
+        
+        # Targets (Y)
+        # We predict the % excursion from PrevClose
+        df_reg['Target_High'] = (df_reg['High'] - df_reg['PrevClose']) / df_reg['PrevClose']
+        df_reg['Target_Low'] = (df_reg['Low'] - df_reg['PrevClose']) / df_reg['PrevClose']
+        
         df_reg = df_reg.dropna()
         
-        df_reg['Gap'] = (df_reg['Open'] - df_reg['PrevClose']) / df_reg['PrevClose']
-        df_reg['High_Ret'] = (df_reg['High'] - df_reg['PrevClose']) / df_reg['PrevClose']
-        df_reg['Low_Ret'] = (df_reg['Low'] - df_reg['PrevClose']) / df_reg['PrevClose']
+        # Keep recent 90 days for regression
+        df_reg = df_reg.tail(90)
         
-        gap_up = df_reg[df_reg['Gap'] > 0]
-        gap_down = df_reg[df_reg['Gap'] <= 0]
+        # Exponential Weights (Recent data is more important)
+        decay_alpha = 0.05
+        weights = np.exp(np.linspace(-decay_alpha * len(df_reg), 0, len(df_reg)))
+        W = np.diag(weights)
+
+        # Construct Matrices
+        X = np.column_stack([
+            np.ones(len(df_reg)),       # Intercept
+            df_reg['Gap'].values,       # Beta Gap
+            df_reg['BTC_Ret'].values,   # Beta BTC
+            df_reg['Vol_State'].values  # Beta Volatility
+        ])
         
-        # 默认值
-        h_up, l_up = 0.05, -0.02
-        h_down, l_down = 0.02, -0.05
+        Y_h = df_reg['Target_High'].values
+        Y_l = df_reg['Target_Low'].values
+
+        # Solve (X.T * W * X)^-1 * (X.T * W * Y)
+        # Using lstsq for stability
+        XtW = X.T @ W
+        XtWX = XtW @ X
+        XtWY_h = XtW @ Y_h
+        XtWY_l = XtW @ Y_l
         
-        if len(gap_up) > 5:
-            h_up = (gap_up['High_Ret'] - gap_up['Gap']).mean()
-            l_up = (gap_up['Low_Ret'] - gap_up['Gap']).mean()
-            
-        if len(gap_down) > 5:
-            h_down = (gap_down['High_Ret'] - gap_down['Gap']).mean()
-            l_down = (gap_down['Low_Ret'] - gap_down['Gap']).mean()
-            
-        model_params = {
-            "up_scenario": {"h_add": max(h_up, 0.01), "l_add": min(l_up, -0.005)},
-            "down_scenario": {"h_add": max(h_down, 0.005), "l_add": min(l_down, -0.01)},
-            "beta_btc": 0.6
+        # Weighted Coefficients
+        theta_h = np.linalg.lstsq(XtWX, XtWY_h, rcond=None)[0]
+        theta_l = np.linalg.lstsq(XtWX, XtWY_l, rcond=None)[0]
+
+        final_model = {
+            "high": {
+                "intercept": theta_h[0],
+                "beta_gap": theta_h[1],
+                "beta_btc": theta_h[2],
+                "beta_vol": theta_h[3]
+            },
+            "low": {
+                "intercept": theta_l[0],
+                "beta_gap": theta_l[1],
+                "beta_btc": theta_l[2],
+                "beta_vol": theta_l[3]
+            }
         }
         
-        # 8. Jump Probability
-        daily_ret = btdr['Close'].pct_change().dropna()
-        std = daily_ret.std()
-        if std > 0:
-            jumps = daily_ret[np.abs(daily_ret) > 2.5 * std]
-            jump_prob = len(jumps) / len(daily_ret)
-        else:
-            jump_prob = 0.1
-            
-        factors = {
-            "beta_btc": beta_btc, 
-            "vwap": close.iloc[-1], # 简化版
-            "adx": adx_val, 
-            "regime": regime, 
-            "rsi": rsi, 
-            "vol_parkinson": vol_parkinson, 
-            "jump_prob": max(0.05, jump_prob) 
-        }
-        
-        return model_params, factors, "MJD-Engine"
-        
+        return final_model, factors, "Quant WLS"
+
     except Exception as e:
-        print(f"Quant Error: {e}")
-        # 发生错误时，返回安全的默认值
+        st.error(f"Quant Engine Error: {e}")
         return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据 (修复 NaN 版) ---
+# --- 4. REALTIME DATA ---
 def determine_market_state(now_ny):
     weekday = now_ny.weekday()
     curr_min = now_ny.hour * 60 + now_ny.minute
@@ -215,186 +268,221 @@ def determine_market_state(now_ny):
     return "Overnight", "dot-night"
 
 def get_realtime_data():
-    tickers = "BTC-USD BTDR MARA RIOT CLSK QQQ ^VIX"
+    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
+    symbols = tickers_list.split()
+    
     try:
-        # 下载：live取2天(减少体积)，daily取5天(做昨收备份)
-        live = yf.download(tickers, period="2d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
-        daily = yf.download(tickers, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
+        # Optimization: Fetch smaller chunks
+        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
+        live = yf.download(tickers_list, period="2d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
         
         quotes = {}
-        now_ny = datetime.now(pytz.timezone('America/New_York'))
-        tag, css = determine_market_state(now_ny)
-        
-        for sym in tickers.split():
-            d_df = daily[sym] if sym in daily else pd.DataFrame()
-            l_df = live[sym] if sym in live else pd.DataFrame()
-            
-            # --- 价格清洗逻辑 ---
-            price = 0.0
-            # 优先从 live 取
-            if not l_df.empty:
-                val = l_df['Close'].iloc[-1]
-                if not pd.isna(val): price = float(val)
-            
-            # 没取到则从 daily 取
-            if price == 0 and not d_df.empty:
-                val = d_df['Close'].iloc[-1]
-                if not pd.isna(val): price = float(val)
+        tz_ny = pytz.timezone('America/New_York')
+        now_ny = datetime.now(tz_ny)
+        today_date = now_ny.date()
+        state_tag, state_css = determine_market_state(now_ny)
+
+        for sym in symbols:
+            try:
+                df_day = daily[sym].dropna(subset=['Close']) if sym in daily else pd.DataFrame()
+                df_min = live[sym].dropna(subset=['Close']) if sym in live else pd.DataFrame()
                 
-            # --- 昨收/开盘逻辑 ---
-            prev = 1.0; open_p = 0.0; is_open = False
-            
-            # 必须用 daily 且去除空值
-            if not d_df.empty:
-                clean_df = d_df.dropna(subset=['Close'])
-                if not clean_df.empty:
-                    last_dt = clean_df.index[-1].date()
-                    
-                    if last_dt == now_ny.date():
-                        # 今天有日线了(已开盘)
-                        is_open = True
-                        open_p = float(clean_df['Open'].iloc[-1])
-                        if len(clean_df) > 1:
-                            prev = float(clean_df['Close'].iloc[-2])
-                        else:
-                            prev = open_p # 新股或数据不足
+                # Price
+                if not df_min.empty: current_price = df_min['Close'].iloc[-1]
+                elif not df_day.empty: current_price = df_day['Close'].iloc[-1]
+                else: current_price = 0.0
+
+                # Prev Close & Open
+                prev_close = 1.0
+                open_price = 0.0
+                is_open_today = False
+                
+                if not df_day.empty:
+                    last_day_date = df_day.index[-1].date()
+                    if last_day_date == today_date:
+                        is_open_today = True
+                        open_price = df_day['Open'].iloc[-1]
+                        if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
+                        else: prev_close = df_day['Open'].iloc[-1]
                     else:
-                        # 还没开盘，最后一条就是昨收
-                        prev = float(clean_df['Close'].iloc[-1])
-                        open_p = prev # 暂定
-            
-            # 计算涨跌幅
-            pct = 0.0
-            if prev > 0 and price > 0:
-                pct = ((price - prev) / prev) * 100
-            
-            quotes[sym] = {
-                "price": price, "pct": pct, 
-                "prev": prev, "open": open_p, 
-                "tag": tag, "css": css, "is_open_today": is_open
-            }
-            
-        # 模拟 FNG 避免 API 卡顿
-        return quotes, 50 
+                        prev_close = df_day['Close'].iloc[-1]
+                        open_price = prev_close
+                
+                pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                quotes[sym] = {
+                    "price": current_price, "pct": pct, "prev": prev_close,
+                    "open": open_price, "tag": state_tag, "css": state_css,
+                    "is_open_today": is_open_today
+                }
+            except:
+                quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "open": 0, "tag": "ERR", "css": "dot-closed", "is_open_today": False}
         
-    except Exception as e:
-        print(f"Data Fetch Error: {e}")
+        try:
+            fng = int(requests.get("https://api.alternative.me/fng/", timeout=0.8).json()['data'][0]['value'])
+        except:
+            fng = 50
+            
+        return quotes, fng
+    except:
         return None, 50
 
-# --- 5. 主界面 Fragment ---
-@st.fragment(run_every=5)
-def show_dashboard():
-    quotes, fng = get_realtime_data()
-    model, factors, eng_status = run_quant_analytics()
+# --- 5. DASHBOARD & VISUALIZATION ---
+@st.fragment(run_every=10)
+def show_live_dashboard():
+    quotes, fng_val = get_realtime_data()
+    ai_model, factors, ai_status = run_grandmaster_analytics()
     
     if not quotes:
-        st.warning("正在建立数据连接 (Initializing)...")
+        st.warning("📡 连接中 (Initializing)...")
         time.sleep(1)
+        st.rerun()
         return
 
-    btdr = quotes.get('BTDR', {'price':0, 'pct':0})
-    btc = quotes.get('BTC-USD', {'price':0, 'pct':0})
-    vix = quotes.get('^VIX', {'price':20, 'pct':0})
+    btc = quotes.get('BTC-USD', {'pct': 0})
+    qqq = quotes.get('QQQ', {'pct': 0})
+    vix = quotes.get('^VIX', {'price': 20, 'pct': 0})
+    btdr = quotes.get('BTDR', {'price': 0})
     
-    # 顶部时间栏
-    now_str = datetime.now(pytz.timezone('America/New_York')).strftime('%H:%M:%S')
-    st.markdown(f"<div class='time-bar'>美东 {now_str} | 引擎: {eng_status} (v9.6 Quant)</div>", unsafe_allow_html=True)
-
-    # 核心指标卡片
-    c1, c2, c3 = st.columns(3)
-    status_html = f"<span class='status-dot {btdr.get('css','dot-closed')}'></span>"
+    # Status Bar
+    tz_ny = pytz.timezone('America/New_York')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='badge-trend'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: {ai_status}</div>", unsafe_allow_html=True)
     
-    with c1: st.markdown(card_html("BTDR", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_html), unsafe_allow_html=True)
-    with c2: st.markdown(card_html("BTC", f"${btc['price']:.0f}", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
-    with c3: st.markdown(card_html("VIX", f"{vix['price']:.1f}", None, 0), unsafe_allow_html=True)
-
-    # --- 动态阻力/支撑 (非对称逻辑) ---
-    if btdr['prev'] > 0:
-        btdr_gap_pct = (btdr['open'] - btdr['prev']) / btdr['prev']
-    else:
-        btdr_gap_pct = 0
+    # Top Cards
+    c1, c2 = st.columns(2)
+    with c1: st.markdown(card_html("BTC (24h)", f"{btc['pct']:+.2f}%", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
+    with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
     
-    # 动态选择参数
-    if btdr_gap_pct >= 0:
-        params = model.get('up_scenario', {'h_add': 0.05, 'l_add': -0.02})
-        base_scenario = "Gap Up (多头惯性)"
-    else:
-        params = model.get('down_scenario', {'h_add': 0.02, 'l_add': -0.05})
-        base_scenario = "Gap Down (回补/延续)"
-        
-    # 计算目标价
-    # High = Open * (1 + 历史平均冲高 + BTC盘中加成)
-    btc_impact = (btc['pct']/100) * 0.3 # 权重系数
-    pred_h_price = btdr['open'] * (1 + params['h_add'] + btc_impact)
-    pred_l_price = btdr['open'] * (1 + params['l_add'] + btc_impact)
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    st.markdown(f"### 🎯 动态阻力/支撑 ({base_scenario})")
-    col_h, col_l = st.columns(2)
-    
-    h_bg = "#e6fcf5" if btdr['price'] < pred_h_price else "#ffc9c9" 
-    l_bg = "#fff5f5" if btdr['price'] > pred_l_price else "#b2f2bb"
-    
-    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; border: 1px solid #ddd;"><div style="font-size: 0.8rem;">阻力 (Resistance)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_h_price:.2f}</div></div></div>""", unsafe_allow_html=True)
-    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; border: 1px solid #ddd;"><div style="font-size: 0.8rem;">支撑 (Support)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_l_price:.2f}</div></div></div>""", unsafe_allow_html=True)
-
-    # --- 因子面板 ---
+    # Peer Comparison
+    st.caption("⚒️ 矿股板块 Beta")
+    cols = st.columns(5)
+    peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
+    for i, p in enumerate(peers):
+        val = quotes.get(p, {'pct': 0})['pct']
+        cols[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
+            
     st.markdown("---")
-    f1, f2, f3, f4 = st.columns(4)
-    # 安全获取因子值
-    vp = factors.get('vol_parkinson', 0.05)
-    rsi = factors.get('rsi', 50)
-    adx = factors.get('adx', 20)
-    jp = factors.get('jump_prob', 0.1)
     
-    with f1: st.markdown(factor_html("Vol (Parkinson)", f"{vp*100:.1f}%", "Risk", 0), unsafe_allow_html=True)
-    with f2: st.markdown(factor_html("RSI", f"{rsi:.0f}", "Neu", 0), unsafe_allow_html=True)
-    with f3: st.markdown(factor_html("ADX", f"{adx:.0f}", factors.get('regime','Neutral'), 1 if adx>25 else -1), unsafe_allow_html=True)
-    with f4: st.markdown(factor_html("Jump Prob", f"{jp*100:.0f}%", "Tail", -1), unsafe_allow_html=True)
+    # BTDR Main
+    c3, c4, c5 = st.columns(3)
+    status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
+    with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
+    
+    open_label = "今日开盘" if btdr['is_open_today'] else "预计开盘/昨收"
+    open_extra = "" if btdr['is_open_today'] else "(Pending)"
+    with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
 
-    # --- 蒙特卡洛：默顿跳跃扩散 (Vectorized MJD) ---
-    st.markdown("### ☁️ 概率推演 (Merton Jump Diffusion)")
+    dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
+    with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
+
+    # --- PREDICTION MODEL (Applying WLS Weights) ---
+    btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) # Gap factor
+    btc_pct_factor = btc['pct'] / 100 # BTC factor
+    vol_state_factor = factors['atr_ratio'] # Volatility factor
+
+    # Retrieve WLS Coeffs
+    mh, ml = ai_model['high'], ai_model['low']
     
-    S0 = btdr['price'] if btdr['price'] > 0 else btdr['prev']
-    T = 5 
+    # Calculate Target High/Low % (vs Prev Close)
+    # Regression Eq: Y = Intercept + B_Gap*Gap + B_BTC*BTC + B_Vol*Vol
+    pred_h_ret = mh['intercept'] + (mh['beta_gap'] * btdr_open_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
+    pred_l_ret = ml['intercept'] + (ml['beta_gap'] * btdr_open_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
+    
+    # FNG Sentiment Adjustment (Manual heuristic on top of regression)
+    sentiment_adj = (fng_val - 50) * 0.0005 # Small adjustment
+    pred_h_ret += sentiment_adj
+    pred_l_ret += sentiment_adj
+    
+    p_high = btdr['prev'] * (1 + pred_h_ret)
+    p_low = btdr['prev'] * (1 + pred_l_ret)
+    
+    st.markdown("### 🎯 日内阻力/支撑 (WLS Regression)")
+    col_h, col_l = st.columns(2)
+    h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
+    l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > p_low else "#ffffff"
+    
+    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
+    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
+
+    # --- FACTORS ---
+    st.markdown("---")
+    st.markdown("### 🌍 宏观 & 微观因子")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.markdown(factor_html("VIX", f"{vix['price']:.1f}", "Vol", 0, "恐慌指数", reverse_color=True), unsafe_allow_html=True)
+    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Corr", 0, "与比特币的相关性系数"), unsafe_allow_html=True)
+    with m3: st.markdown(factor_html("RSI", f"{factors['rsi']:.0f}", "Mom", 0, "相对强弱指标"), unsafe_allow_html=True)
+    with m4: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "预期波动率"), unsafe_allow_html=True)
+
+    # --- OPTIMIZED MONTE CARLO: Student-t + Volatility Clustering ---
+    st.markdown("### ☁️ 概率推演 (Student-t + Mean Reversion)")
+    
+    # Parameters
+    current_vol = factors['vol_base']
+    # Long term vol target (historical average ~80% annualized -> ~0.05 daily)
+    long_term_vol = 0.05 
+    # Drift based on Beta and current BTC trend
+    drift = (btc['pct']/100 * factors['beta_btc'] * 0.5) 
+    
+    # Simulation Settings
+    sims = 1500 # Increased count
+    days = 5
     dt = 1
-    mu = (btc['pct']/100 * factors.get('beta_btc', 1.5)) * 0.5 
-    sigma = vp
-    lam = jp 
     
-    # 恐慌调整
-    jump_mu = -0.02 if vix['price'] > 25 else 0.0 
-    jump_sigma = 0.05 
-    simulations = 1000
+    # Arrays
+    price_paths = np.zeros((sims, days + 1))
+    price_paths[:, 0] = btdr['price']
     
-    # 1. GBM Component
-    Z1 = np.random.normal(0, 1, (simulations, T))
-    drift_part = (mu - 0.5 * sigma**2) * dt
-    diffusion_part = sigma * np.sqrt(dt) * Z1
+    # Volatility paths (Vectorized loop for days)
+    # Volatility Mean Reversion Speed
+    kappa = 0.1 
     
-    # 2. Jump Component
-    N = np.random.poisson(lam * dt, (simulations, T))
-    Jump_part = N * np.random.normal(jump_mu, jump_sigma, (simulations, T))
+    sim_vol = np.full(sims, current_vol)
     
-    # 3. Path Generation
-    daily_log_returns = drift_part + diffusion_part + Jump_part
-    price_paths = np.zeros((simulations, T + 1))
-    price_paths[:, 0] = S0
-    price_paths[:, 1:] = S0 * np.exp(np.cumsum(daily_log_returns, axis=1))
+    for t in range(1, days + 1):
+        # 1. Update Volatility (Mean Reversion)
+        # If current vol is high, it decays. If low, it rises.
+        sim_vol = sim_vol + kappa * (long_term_vol - sim_vol)
+        # Ensure vol stays positive
+        sim_vol = np.maximum(sim_vol, 0.01)
+        
+        # 2. Generate Shocks using Student's t (df=5 for fat tails)
+        # Dividing by sqrt(df/(df-2)) to standardize variance if needed, 
+        # but standard_t is fine for capturing tail risk directly.
+        shocks = np.random.standard_t(df=5, size=sims)
+        
+        # 3. Calculate Returns
+        # Geometric Brownian Motion step
+        daily_ret = np.exp((drift - 0.5 * sim_vol**2) * dt + sim_vol * np.sqrt(dt) * shocks)
+        
+        # 4. Update Prices
+        price_paths[:, t] = price_paths[:, t-1] * daily_ret
+        
+    percentiles = np.percentile(price_paths, [10, 50, 90], axis=0)
     
-    # 4. Statistics
-    p90 = np.percentile(price_paths, 90, axis=0)
-    p50 = np.percentile(price_paths, 50, axis=0)
-    p10 = np.percentile(price_paths, 10, axis=0)
+    chart_data = pd.DataFrame({
+        "Day": np.arange(days + 1),
+        "P90": np.round(percentiles[2], 2),
+        "P50": np.round(percentiles[1], 2),
+        "P10": np.round(percentiles[0], 2)
+    })
     
-    chart_df = pd.DataFrame({"Day": range(T+1), "P90": p90, "P50": p50, "P10": p10})
+    base = alt.Chart(chart_data).encode(x=alt.X('Day:O', title='未来交易日 (T+)'))
+    area = base.mark_area(opacity=0.2, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
+    l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
+    l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
+    l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
-    base = alt.Chart(chart_df).encode(x=alt.X('Day:O', title='未来交易日 (T+)'))
-    area = base.mark_area(opacity=0.15, color='#7048e8').encode(y=alt.Y('P10', title='价格模拟', scale=alt.Scale(zero=False)), y2='P90')
-    line50 = base.mark_line(color='#7048e8', strokeDash=[2,2]).encode(y='P50')
+    nearest = alt.selection_point(nearest=True, on='mouseover', fields=['Day'], empty=False)
+    points = base.mark_circle(size=60, color="black").encode(
+        y='P50', opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+        tooltip=[alt.Tooltip('Day'), alt.Tooltip('P90'), alt.Tooltip('P50'), alt.Tooltip('P10')]
+    )
     
-    st.altair_chart((area + line50).interactive(), use_container_width=True)
-    st.caption(f"Model: MJD | Jump $\lambda$: {lam:.2f} | $\sigma$: {sigma:.2f} | Sims: {simulations}")
+    st.altair_chart((area + l90 + l50 + l10 + base.mark_rule(opacity=0).encode(x='Day').add_params(nearest) + points).properties(height=300).interactive(), use_container_width=True)
+    st.caption(f"Engine: Quant v9.6 | Fat Tails (df=5) | Vol Reversion (κ={kappa})")
 
-# --- 6. 启动 ---
-st.markdown("### ⚡ BTDR Pilot v9.6 Quant")
-show_dashboard()
+# --- 6. MAIN ---
+st.markdown("### ⚡ BTDR 领航员 v9.6 Quant")
+show_live_dashboard()
