@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v9.4", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.5", layout="centered")
 
-# CSS: 样式定义 (新增 Overnight 紫色状态)
+# CSS: 样式定义 (新增 Overnight 动态闪烁效果)
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -23,16 +23,11 @@ st.markdown("""
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 锁定图表高度 */
     div[data-testid="stAltairChart"] {
-        height: 320px !important;
-        min-height: 320px !important;
-        overflow: hidden !important;
-        border: 1px solid #f8f9fa;
+        height: 320px !important; min-height: 320px !important; overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     canvas { transition: opacity 0.2s ease-in-out; }
     
-    /* 统一卡片样式 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
@@ -42,14 +37,12 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* 因子卡片 & Tooltips */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.02);
         position: relative; cursor: help; transition: transform 0.1s;
     }
-    
     .factor-box:hover { border-color: #ced4da; transform: translateY(-1px); }
     .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
@@ -63,25 +56,23 @@ st.markdown("""
         font-weight: normal; line-height: 1.4; pointer-events: none;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    
     .tooltip-text::after {
         content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px;
-        border-width: 5px; border-style: solid;
-        border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
+        border-width: 5px; border-style: solid; border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
-
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     
-    /* 颜色定义 */
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
-    /* 状态小圆点 (Pre/Post/Mkt/Night) */
+    /* 状态点动画 */
+    @keyframes pulse-purple { 0% { box-shadow: 0 0 0 0 rgba(112, 72, 232, 0.4); } 70% { box-shadow: 0 0 0 6px rgba(112, 72, 232, 0); } 100% { box-shadow: 0 0 0 0 rgba(112, 72, 232, 0); } }
+    
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px; }
-    .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; } /* 盘前：橙色 */
-    .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; } /* 盘中：绿色 */
-    .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; } /* 盘后：蓝色 */
-    .dot-night { background-color: #7048e8; box-shadow: 0 0 4px #7048e8; } /* 夜盘：紫色 */
-    .dot-closed { background-color: #adb5bd; } /* 休市：灰色 */
+    .dot-pre { background-color: #f59f00; }
+    .dot-reg { background-color: #0ca678; }
+    .dot-post { background-color: #1c7ed6; }
+    .dot-night { background-color: #7048e8; animation: pulse-purple 2s infinite; } /* 夜盘紫色呼吸灯 */
+    .dot-closed { background-color: #adb5bd; }
     
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
@@ -120,7 +111,6 @@ def run_grandmaster_analytics():
     
     try:
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
-        
         if data.empty: return default_model, default_factors, "No Data"
 
         btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
@@ -146,6 +136,7 @@ def run_grandmaster_analytics():
         high = btdr['High']; low = btdr['Low']; close = btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
+        
         up_move = high - high.shift(1); down_move = low.shift(1) - low
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
@@ -182,77 +173,79 @@ def run_grandmaster_analytics():
         print(f"Model Error: {e}")
         return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据 (v9.4 Fix: 夜盘全时段判定) ---
+# --- 4. 实时数据 (v9.5 Fix: 双轨抓取 - 强制读取夜盘Quote) ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
+    symbols = tickers_list.split()
     
     for attempt in range(3):
         try:
-            # period="5d" 确保能抓到上周五盘后或本周一凌晨的数据
+            # 1. 批量下载历史数据 (用于计算 Beta, VWAP 等)
+            # 这里的 period="5d" 只是为了防止空数据，夜盘K线大概率是缺失的
             daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
-            live = yf.download(tickers_list, period="5d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
             
-            if daily.empty: raise ValueError("Empty Data")
-            
+            # 2. 核心修复：不依赖 K 线，而是直接遍历 Ticker 对象获取 fast_info (Quote Snapshots)
+            # 这种方式能抓到 Blue Ocean ATS / 夜盘的最新报价
             quotes = {}
-            symbols = tickers_list.split()
             tz_ny = pytz.timezone('America/New_York')
             now_ny = datetime.now(tz_ny)
             today_date = now_ny.date()
             
+            # 判断时间段
+            current_minutes = now_ny.hour * 60 + now_ny.minute
+            
+            # 状态判定逻辑 (严格覆盖夜盘)
+            state = "Overnight"
+            if now_ny.weekday() == 5: state = "Weekend"
+            elif now_ny.weekday() == 6 and now_ny.hour < 20: state = "Weekend"
+            else:
+                if 240 <= current_minutes < 570: state = "Pre-Mkt"
+                elif 570 <= current_minutes < 960: state = "Mkt Open"
+                elif 960 <= current_minutes < 1200: state = "Post-Mkt"
+                else: state = "Overnight"
+
             for sym in symbols:
                 try:
+                    # --- A. 获取基础数据 ---
                     df_day = daily[sym] if sym in daily else pd.DataFrame()
                     if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
-                    df_min = live[sym] if sym in live else pd.DataFrame()
-                    if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
                     
-                    # 1. 现价 (严格取最后一笔交易数据)
-                    if not df_min.empty:
-                        current_price = df_min['Close'].iloc[-1]
-                    else:
-                        current_price = df_day['Close'].iloc[-1] if not df_day.empty else 0
-                    
-                    # 2. 开盘价
+                    # 确定昨收/开盘
+                    prev_close = 1.0
                     open_price = 0.0
                     is_open_today = False
+                    
                     if not df_day.empty:
-                        if df_day.index[-1].date() == today_date:
+                        last_day_date = df_day.index[-1].date()
+                        if last_day_date == today_date:
+                            prev_close = df_day['Close'].iloc[-2] if len(df_day) >= 2 else df_day['Open'].iloc[-1]
                             open_price = df_day['Open'].iloc[-1]
                             is_open_today = True
                         else:
-                            open_price = df_day['Close'].iloc[-1] 
-
-                    # 3. 昨收
-                    prev_close = 1.0
-                    if not df_day.empty:
-                        if df_day.index[-1].date() == today_date:
-                            if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
-                            else: prev_close = df_day['Open'].iloc[-1]
-                        else:
                             prev_close = df_day['Close'].iloc[-1]
+                            open_price = prev_close # 没开盘暂用昨收
+                    
+                    # --- B. 获取现价 (强制使用 Quote 接口) ---
+                    # 这是一个独立的网络请求，专门去拿最新的报价，不走 K 线
+                    current_price = 0.0
+                    
+                    # 尝试从 fast_info 获取最新价 (包含夜盘)
+                    try:
+                        ticker_obj = yf.Ticker(sym)
+                        # fast_info['last_price'] 通常是 Yahoo 网页端的最新大字报价
+                        fast_price = ticker_obj.fast_info.get('last_price')
+                        
+                        if fast_price is not None and str(fast_price) != 'nan':
+                            current_price = float(fast_price)
+                        else:
+                            # 如果 fast_info 失败，降级到 K 线数据
+                            current_price = df_day['Close'].iloc[-1] if not df_day.empty else 0
+                    except:
+                        # 再次降级
+                        current_price = df_day['Close'].iloc[-1] if not df_day.empty else 0
 
-                    # 4. 状态判断 (精细化时间段)
-                    current_minutes = now_ny.hour * 60 + now_ny.minute
-                    
-                    # 默认状态
-                    state = "Overnight" 
-                    
-                    # 周末判断 (周六全天 + 周日晚上8点前)
-                    if now_ny.weekday() == 5: # Saturday
-                        state = "Weekend"
-                    elif now_ny.weekday() == 6 and now_ny.hour < 20: # Sunday before 8PM ET
-                        state = "Weekend"
-                    else:
-                        # 交易日逻辑 (包含周日20点后)
-                        if 240 <= current_minutes < 570:   # 04:00 - 09:30
-                            state = "Pre-Mkt"
-                        elif 570 <= current_minutes < 960: # 09:30 - 16:00
-                            state = "Mkt Open"
-                        elif 960 <= current_minutes < 1200:# 16:00 - 20:00
-                            state = "Post-Mkt"
-                        else:                              # 20:00 - 04:00 (夜盘)
-                            state = "Overnight"
+                    # 容错：如果 Quote 获取的价格是 0，回退到 Prev Close
+                    if current_price == 0 and prev_close > 0: current_price = prev_close
 
                     pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     
@@ -264,7 +257,8 @@ def get_realtime_data():
                         "tag": state,
                         "is_open_today": is_open_today
                     }
-                except: quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR", "is_open_today": False}
+                except Exception as e:
+                    quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR", "is_open_today": False}
             
             try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
             except: fng = 50
@@ -284,7 +278,7 @@ def show_live_dashboard():
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
     if not quotes:
-        st.warning("📡 连接中 (Retrying)...")
+        st.warning("📡 夜盘数据连接中 (Connecting to Blue Ocean)...")
         return
 
     btc_chg = quotes['BTC-USD']['pct']
@@ -298,7 +292,7 @@ def show_live_dashboard():
     
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.4 Night</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.5 Overnight Fix</div>", unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
@@ -317,22 +311,20 @@ def show_live_dashboard():
     
     c3, c4, c5 = st.columns(3)
     
-    # 状态点映射 (增加 Overnight)
+    # 状态点 (夜盘紫色)
     state_color_map = {
-        "Overnight": "dot-night", # 紫色
-        "Pre-Mkt": "dot-pre",     # 橙色
-        "Mkt Open": "dot-reg",    # 绿色
-        "Post-Mkt": "dot-post",   # 蓝色
-        "Weekend": "dot-closed",  # 灰色
+        "Overnight": "dot-night", 
+        "Pre-Mkt": "dot-pre", 
+        "Mkt Open": "dot-reg", 
+        "Post-Mkt": "dot-post", 
+        "Weekend": "dot-closed", 
         "ERR": "dot-closed"
     }
-    dot_class = state_color_map.get(btdr.get('tag', 'Weekend'), 'dot-closed')
+    dot_class = state_color_map.get(btdr.get('tag', 'Overnight'), 'dot-night')
     status_tag = f"<span class='status-dot {dot_class}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     
-    # 1. 现价
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # 2. 开盘价
     open_val_str = f"${btdr['open']:.2f}"
     if not btdr['is_open_today']:
         open_label = "预计开盘/昨收"
@@ -343,7 +335,6 @@ def show_live_dashboard():
         
     with c4: st.markdown(card_html(open_label, open_val_str, None, 0, open_extra), unsafe_allow_html=True)
 
-    # 3. 机构成本
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
@@ -363,81 +354,4 @@ def show_live_dashboard():
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
-    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">日内阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div></div></div>""", unsafe_allow_html=True)
-    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">日内支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div></div></div>""", unsafe_allow_html=True)
-
-    # --- 因子面板 ---
-    st.markdown("---")
-    st.markdown("### 🌍 宏观环境 (Macro)")
-    m1, m2, m3, m4 = st.columns(4)
-    with m1: st.markdown(factor_html("QQQ (纳指)", f"{qqq_chg:+.2f}%", "Market", qqq_chg, "科技股大盘风向标。<br>QQQ 跌则 BTDR 承压。"), unsafe_allow_html=True)
-    with m2: st.markdown(factor_html("VIX (恐慌)", f"{vix_val:.1f}", f"{vix_chg:+.1f}%", -vix_chg, "市场恐慌指数。<br>>20: 紧张<br>>30: 极度危险 (崩盘风险)", reverse_color=True), unsafe_allow_html=True)
-    with m3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Corr", 0, "联动系数。<br>1.5 代表 BTC 涨 1%<br>BTDR 往往能涨 1.5%"), unsafe_allow_html=True)
-    with m4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Corr", 0, "美股大盘联动系数。<br>数值越高，受美股影响越大。"), unsafe_allow_html=True)
-    
-    st.markdown("### 🔬 微观结构 (Micro)")
-    mi1, mi2, mi3, mi4 = st.columns(4)
-    drift_est = (btc_chg/100 * factors['beta_btc'] * 0.4) + (qqq_chg/100 * factors['beta_qqq'] * 0.4)
-    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
-    
-    with mi1: st.markdown(factor_html("ADX (强度)", f"{factors['adx']:.1f}", factors['regime'], 1 if factors['adx']>25 else -1, "趋势强度指标。<br>>25 (Trend): 适合顺势<br><20 (Chop): 适合高抛低吸"), unsafe_allow_html=True)
-    with mi2: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "O/B" if factors['rsi']>70 else ("O/S" if factors['rsi']<30 else "Neu"), 0, "强弱指标。<br>>70: 超买 (回调风险)<br><30: 超卖 (反弹机会)"), unsafe_allow_html=True)
-    with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "预期波动率。<br>数值越大，预测范围(喇叭口)<br>张得越开，风险越大。"), unsafe_allow_html=True)
-    with mi4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "预期漂移率。<br>模型综合所有因子后，<br>推算出的今日上涨惯性。"), unsafe_allow_html=True)
-
-    # --- 宗师级推演 ---
-    st.markdown("### ☁️ 宗师级推演 (P90-P50-P10)")
-    
-    vol = factors['vol_base']
-    drift = drift_est
-    if vix_val > 25: drift -= 0.005; vol *= 1.3
-    if factors['rsi'] > 75: drift -= 0.003
-    if factors['rsi'] < 25: drift += 0.003
-    if factors['regime'] == "Chop": drift *= 0.5; vol *= 0.8
-    
-    simulations = 500; days_ahead = 5; paths = []
-    current = btdr['price']
-    
-    for i in range(simulations):
-        path = [current]; p = current
-        for d in range(days_ahead):
-            shock = np.random.normal(0, 1)
-            change = (drift - 0.5 * vol**2) + vol * shock
-            p = p * np.exp(change)
-            path.append(p)
-        paths.append(path)
-        
-    paths = np.array(paths)
-    p90 = np.percentile(paths, 90, axis=0)
-    p50 = np.percentile(paths, 50, axis=0)
-    p10 = np.percentile(paths, 10, axis=0)
-    
-    chart_data = []
-    for d in range(days_ahead + 1):
-        chart_data.append({
-            "Day": d,
-            "P90": round(p90[d], 2),
-            "P50": round(p50[d], 2),
-            "P10": round(p10[d], 2),
-        })
-    df_chart = pd.DataFrame(chart_data)
-    
-    base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
-    area = base.mark_area(opacity=0.2, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
-    l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
-    l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
-    l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
-    
-    nearest = alt.selection_point(nearest=True, on='mouseover', fields=['Day'], empty=False)
-    selectors = base.mark_rule(opacity=0).encode(x='Day:O').add_params(nearest)
-    points = base.mark_circle(size=60, color="black").encode(
-        y='P50', opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
-        tooltip=[alt.Tooltip('Day', title='T+'), alt.Tooltip('P90', title='P90 (High)', format='.2f'), alt.Tooltip('P50', title='P50 (Median)', format='.2f'), alt.Tooltip('P10', title='P10 (Low)', format='.2f')]
-    )
-    
-    st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v9.4 Night | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
-
-# --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v9.4 Night")
-show_live_dashboard()
+    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">日内阻力 (High
