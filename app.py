@@ -9,7 +9,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v10.4 Interactive", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v10.5 Ultimate", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -33,6 +33,9 @@ CUSTOM_CSS = """
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
     }
+    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
+    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
@@ -47,11 +50,6 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
-    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
-    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
-    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
-    
-    /* 因子卡片样式 */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -63,7 +61,6 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    /* 通用 Tooltip 样式 */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -80,9 +77,8 @@ CUSTOM_CSS = """
         border-width: 5px; border-style: solid;
         border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
-    /* 激活 Tooltip 的规则 */
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
-    .signal-box:hover .tooltip-text { visibility: visible; opacity: 1; } /* 新增这一行 */
+    .signal-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
@@ -105,12 +101,12 @@ CUSTOM_CSS = """
     .bar-hist { background-color: #fab005; width: 30%; }
     .bar-mom { background-color: #fa5252; width: 20%; }
     
-    /* Sniper Signals (Updated for Tooltip) */
+    /* Sniper Signals */
     .signal-box { 
         border-radius: 8px; padding: 12px; margin-bottom: 15px; 
         text-align: center; font-weight: bold; color: white; 
         display: flex; flex-direction: column; justify-content: center; 
-        height: 100%; position: relative; cursor: help; /* 增加相对定位和鼠标样式 */
+        height: 100%; position: relative; cursor: help;
     }
     .sig-buy { background-color: #0ca678; box-shadow: 0 4px 12px rgba(12, 166, 120, 0.3); border: 1px solid #099268; }
     .sig-sell { background-color: #e03131; box-shadow: 0 4px 12px rgba(224, 49, 49, 0.3); border: 1px solid #c92a2a; }
@@ -131,7 +127,14 @@ CUSTOM_CSS = """
     .strat-row { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; align-items: center; }
     .strat-label { opacity: 0.8; }
     .strat-val { font-weight: 700; font-size: 1rem; }
-    .strat-note { font-size: 0.65rem; opacity: 0.7; margin-top: 5px; font-style: italic; }
+    
+    /* v10.5 新增：盈亏比突出显示 */
+    .strat-rr { 
+        margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.1);
+        display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600;
+    }
+    .rr-good { color: #2f9e44; } /* 盈亏比好 */
+    .rr-bad { color: #e03131; }  /* 盈亏比差 */
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -260,7 +263,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v10.4 Interactive"
+        return final_model, factors, "v10.5 Ultimate"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -385,47 +388,33 @@ def show_live_dashboard():
     dist_to_high = ((p_high - curr_p) / curr_p) * 100
     dist_to_low = ((curr_p - p_low) / curr_p) * 100
     
-    # 1. Generate Signal & Tooltip
-    signal_txt = "WAIT / HOLD"
-    signal_css = "sig-wait"
-    sub_txt = "等待方向确认"
+    # 1. Signal
+    signal_txt = "WAIT / HOLD"; signal_css = "sig-wait"; sub_txt = "等待方向确认"
     tooltip_msg = "当前价格处于中间区域，多空博弈不明朗，建议观望等待。"
     
     if curr_p <= p_low * 1.015:
-        if factors['rsi'] < 35: 
-            signal_txt = "STRONG BUY"; signal_css = "sig-buy"; sub_txt = "超卖区域 + 支撑确认"
-            tooltip_msg = "【强力买入理由】\n1. 价格跌破日内支撑位\n2. RSI指标进入超卖区(<35)\n3. 盈亏比极佳"
-        else: 
-            signal_txt = "BUY ZONE"; signal_css = "sig-buy"; sub_txt = "接近日内支撑"
-            tooltip_msg = "【买入区域】\n价格已接近模型预测的日内低点，可尝试左侧挂单建仓。"
+        if factors['rsi'] < 35: signal_txt = "STRONG BUY"; signal_css = "sig-buy"; sub_txt = "超卖区域 + 支撑确认"; tooltip_msg = "【强力买入理由】\n1. 价格跌破日内支撑位\n2. RSI指标进入超卖区(<35)\n3. 盈亏比极佳"
+        else: signal_txt = "BUY ZONE"; signal_css = "sig-buy"; sub_txt = "接近日内支撑"; tooltip_msg = "【买入区域】\n价格已接近模型预测的日内低点，可尝试左侧挂单建仓。"
     elif curr_p >= p_high * 0.985:
-        if factors['rsi'] > 65: 
-            signal_txt = "STRONG SELL"; signal_css = "sig-sell"; sub_txt = "超买区域 + 阻力确认"
-            tooltip_msg = "【强力卖出理由】\n1. 价格触及日内阻力位\n2. RSI指标进入超买区(>65)\n3. 短期回调风险大"
-        else: 
-            signal_txt = "SELL ZONE"; signal_css = "sig-sell"; sub_txt = "接近日内阻力"
-            tooltip_msg = "【卖出区域】\n价格已接近模型预测的日内高点，建议分批止盈或做空。"
+        if factors['rsi'] > 65: signal_txt = "STRONG SELL"; signal_css = "sig-sell"; sub_txt = "超买区域 + 阻力确认"; tooltip_msg = "【强力卖出理由】\n1. 价格触及日内阻力位\n2. RSI指标进入超买区(>65)\n3. 短期回调风险大"
+        else: signal_txt = "SELL ZONE"; signal_css = "sig-sell"; sub_txt = "接近日内阻力"; tooltip_msg = "【卖出区域】\n价格已接近模型预测的日内高点，建议分批止盈或做空。"
     else:
-        if dist_to_low < 2.0: 
-            signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"
-            tooltip_msg = "价格正在向支撑位靠拢，请密切关注 RSI 指标是否企稳。"
-        elif dist_to_high < 2.0: 
-            signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"
-            tooltip_msg = "价格正在向阻力位靠拢，若动能不足可能回落。"
+        if dist_to_low < 2.0: signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"; tooltip_msg = "价格正在向支撑位靠拢，请密切关注 RSI 指标是否企稳。"
+        elif dist_to_high < 2.0: signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"; tooltip_msg = "价格正在向阻力位靠拢，若动能不足可能回落。"
 
     # 2. Strategy Levels
     vol_price = btdr['prev'] * factors['vol_base']
-    buy_limit = p_low * 1.005 
-    buy_stop = p_low - (vol_price * 1.5)
-    buy_target = p_high * 0.99
+    buy_limit = p_low * 1.005; buy_stop = p_low - (vol_price * 1.5); buy_target = p_high * 0.99
+    # 计算做多盈亏比
+    rr_long = (buy_target - buy_limit) / (buy_limit - buy_stop) if (buy_limit - buy_stop) > 0 else 0
+    rr_long_class = "rr-good" if rr_long >= 2 else ("rr-bad" if rr_long < 1 else "")
     
-    sell_limit = p_high * 0.995
-    sell_stop = p_high + (vol_price * 1.5)
-    sell_target = p_low * 1.01
+    sell_limit = p_high * 0.995; sell_stop = p_high + (vol_price * 1.5); sell_target = p_low * 1.01
+    # 计算做空盈亏比
+    rr_short = (sell_limit - sell_target) / (sell_stop - sell_limit) if (sell_stop - sell_limit) > 0 else 0
+    rr_short_class = "rr-good" if rr_short >= 2 else ("rr-bad" if rr_short < 1 else "")
 
-    # 3. Layout: Signal (Left) | Plan (Right)
     cmd1, cmd2, cmd3 = st.columns([1.2, 1.4, 1.4])
-    
     with cmd1:
         st.markdown(f"""
         <div class="signal-box {signal_css}">
@@ -435,7 +424,6 @@ def show_live_dashboard():
             <div class="signal-sub">{sub_txt}</div>
         </div>
         """, unsafe_allow_html=True)
-        
     with cmd2:
         st.markdown(f"""
         <div class="strategy-card strat-long">
@@ -443,9 +431,9 @@ def show_live_dashboard():
             <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${buy_limit:.2f}</span></div>
             <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${buy_target:.2f}</span></div>
             <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${buy_stop:.2f}</span></div>
+            <div class="strat-rr">盈亏比 (R/R): <span class="{rr_long_class}">1 : {rr_long:.2f}</span></div>
         </div>
         """, unsafe_allow_html=True)
-        
     with cmd3:
         st.markdown(f"""
         <div class="strategy-card strat-short">
@@ -453,6 +441,7 @@ def show_live_dashboard():
             <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${sell_limit:.2f}</span></div>
             <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${sell_target:.2f}</span></div>
             <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${sell_stop:.2f}</span></div>
+            <div class="strat-rr">盈亏比 (R/R): <span class="{rr_short_class}">1 : {rr_short:.2f}</span></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -501,7 +490,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.4 Interactive | Signal: Hover for details")
+    st.caption(f"Engine: v10.5 Ultimate | Signal: Hover for details")
 
-st.markdown("### ⚡ BTDR 领航员 v10.4 Interactive")
+st.markdown("### ⚡ BTDR 领航员 v10.5 Ultimate")
 show_live_dashboard()
