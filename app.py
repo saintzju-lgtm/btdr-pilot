@@ -302,7 +302,7 @@ def get_realtime_data():
         return quotes, fng
     except: return None, 50
 
-# --- 5. 仪表盘展示 (修复了 NameError) ---
+# --- 5. 仪表盘展示 (Split Macro/Micro View) ---
 @st.fragment(run_every=10)
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
@@ -353,7 +353,7 @@ def show_live_dashboard():
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- 关键修复：提前计算 drift_est ---
+    # --- 提前计算 drift_est ---
     drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
 
@@ -407,14 +407,27 @@ def show_live_dashboard():
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # --- 因子 & 推演 ---
+    # --- 因子 & 推演 (Split Layout) ---
     st.markdown("---")
-    st.markdown("### 🌍 宏观 & 微观 (Macro/Micro)")
-    m1, m2, m3, m4 = st.columns(4)
-    with m1: st.markdown(factor_html("VIX", f"{vix['price']:.1f}", "Risk", 0, "恐慌指数", reverse_color=True), unsafe_allow_html=True)
-    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
-    with m3: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "Mom", 0, "相对强弱"), unsafe_allow_html=True)
-    with m4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "当日预期动能"), unsafe_allow_html=True)
+    
+    # Macro Panel
+    st.markdown("### 🌍 宏观环境 (Macro)")
+    ma1, ma2, ma3, ma4 = st.columns(4)
+    with ma1: st.markdown(factor_html("QQQ (纳指)", f"{qqq['pct']:+.2f}%", "Market", qqq['pct'], "科技股大盘风向标。"), unsafe_allow_html=True)
+    with ma2: st.markdown(factor_html("VIX (恐慌)", f"{vix['price']:.1f}", "Risk", 0, "市场恐慌指数，>25需警惕。", reverse_color=True), unsafe_allow_html=True)
+    with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
+    with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
+
+    # Micro Panel
+    st.markdown("### 🔬 微观结构 (Micro)")
+    mi1, mi2, mi3, mi4 = st.columns(4)
+    rsi_val = factors['rsi']
+    rsi_status = "O/B" if rsi_val > 70 else ("O/S" if rsi_val < 30 else "Neu")
+
+    with mi1: st.markdown(factor_html("ADX (强度)", f"{factors['adx']:.1f}", factors['regime'], 1 if factors['adx']>25 else -1, "趋势强度指标，>25为趋势。"), unsafe_allow_html=True)
+    with mi2: st.markdown(factor_html("RSI (14d)", f"{rsi_val:.0f}", rsi_status, 0, "强弱指标，>70超买，<30超卖。"), unsafe_allow_html=True)
+    with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "预测波动率 (基于 EWM Std)。"), unsafe_allow_html=True)
+    with mi4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "当日预期动能"), unsafe_allow_html=True)
     
     st.markdown("### ☁️ 概率推演 (Student-t + Mean Reversion)")
     current_vol = factors['vol_base']
