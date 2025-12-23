@@ -9,7 +9,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v9.9 Fixed", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.9 Ensemble", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -111,7 +111,7 @@ def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=Fa
     </div>
     """
 
-# --- 3. 核心计算 (Kalman + WLS) ---
+# --- 3. 核心计算 (Kalman + WLS + Ensemble) ---
 def run_kalman_filter(y, x, delta=1e-4):
     n = len(y)
     beta = np.zeros(n)
@@ -173,6 +173,7 @@ def run_grandmaster_analytics():
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
         
+        # ADX Logic
         up, down = high.diff(), -low.diff()
         plus_dm = np.where((up > down) & (up > 0), up, 0)
         minus_dm = np.where((down > up) & (down > 0), down, 0)
@@ -295,7 +296,7 @@ def get_realtime_data():
         return quotes, fng
     except: return None, 50
 
-# --- 5. 仪表盘展示 (Fixed Logic) ---
+# --- 5. 仪表盘展示 (Fixed & Optimized) ---
 @st.fragment(run_every=10)
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
@@ -307,24 +308,34 @@ def show_live_dashboard():
         st.rerun()
         return
 
+    # 1. 解包数据
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0})
     qqq = quotes.get('QQQ', {'pct': 0})
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0})
     btdr = quotes.get('BTDR', {'price': 0})
+
+    # 2. 【关键修复】提前计算所有衍生变量，防止 NameError
+    dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     
-    # Status
+    drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
+    # Mean Reversion Adjustment
+    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
+    
+    # 3. 顶部状态栏
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     regime_tag = factors['regime']
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     
-    # Cards
+    # 4. 指标卡片
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (USD)", f"${btc['price']:,.0f}", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
     with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
     
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    
+    # 5. 同行对比
     st.caption("⚒️ 矿股板块 Beta")
     cols = st.columns(5)
     peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
@@ -334,7 +345,7 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # BTDR Main
+    # 6. BTDR 核心面板
     c3, c4, c5 = st.columns(3)
     status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
@@ -343,33 +354,28 @@ def show_live_dashboard():
     open_extra = "" if btdr['is_open_today'] else "(Pending)"
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
 
-    dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- 关键修复：在此处（使用前）计算 drift_est ---
-    drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
-    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
-
-    # --- Ensemble Core ---
+    # 7. 集成预测计算 (Ensemble Logic)
     btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) 
     btc_pct_factor = btc['pct'] / 100 
     vol_state_factor = factors['atr_ratio'] 
 
     mh, ml = ai_model['high'], ai_model['low']
     
-    # 1. Kalman
+    # Model 1: Kalman
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * btdr_open_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * btdr_open_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # 2. Hist
+    # Model 2: Hist
     pred_h_hist = ai_model['ensemble_hist_h']
     pred_l_hist = ai_model['ensemble_hist_l']
     
-    # 3. Mom
+    # Model 3: Mom
     pred_h_mom = ai_model['ensemble_mom_h']
     pred_l_mom = ai_model['ensemble_mom_l']
     
-    # Vote
+    # Voting Weights
     w_k, w_h, w_m = 0.5, 0.3, 0.2
     final_h_ret = (w_k * pred_h_kalman) + (w_h * pred_h_hist) + (w_m * pred_h_mom)
     final_l_ret = (w_k * pred_l_kalman) + (w_h * pred_l_hist) + (w_m * pred_l_mom)
@@ -399,7 +405,7 @@ def show_live_dashboard():
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # --- Factors & Simulation (Split View) ---
+    # 8. 因子面板 (Split View & Safe Rendering)
     st.markdown("---")
     
     # Macro Panel
@@ -407,8 +413,8 @@ def show_live_dashboard():
     ma1, ma2, ma3, ma4 = st.columns(4)
     with ma1: st.markdown(factor_html("QQQ (纳指)", f"{qqq['pct']:+.2f}%", "Market", qqq['pct'], "科技股大盘风向标。"), unsafe_allow_html=True)
     with ma2: st.markdown(factor_html("VIX (恐慌)", f"{vix['price']:.1f}", "Risk", 0, "市场恐慌指数，>25需警惕。", reverse_color=True), unsafe_allow_html=True)
-    with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
-    with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
+    with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
+    with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
 
     # Micro Panel
     st.markdown("### 🔬 微观结构 (Micro)")
@@ -421,6 +427,7 @@ def show_live_dashboard():
     with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "预测波动率 (基于 EWM Std)。"), unsafe_allow_html=True)
     with mi4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "当日预期动能"), unsafe_allow_html=True)
     
+    # 9. 概率推演
     st.markdown("### ☁️ 概率推演 (Student-t + Mean Reversion)")
     current_vol = factors['vol_base']
     long_term_vol = 0.05 
