@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.0", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.1", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 保持 UI 统一
+# CSS: 宗师版 UI
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -36,18 +36,15 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    .macro-box {
-        background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 8px; text-align: center;
-        height: 80px; display: flex; flex-direction: column; justify-content: center;
+    /* 因子小卡片 */
+    .factor-box {
+        background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
+        height: 75px; display: flex; flex-direction: column; justify-content: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
     }
-    .macro-title { font-size: 0.7rem; color: #888; }
-    .macro-val { font-size: 1.1rem; font-weight: bold; color: #495057; }
-    .macro-sub { font-size: 0.7rem; font-weight: 600; }
-    
-    /* 状态徽章 */
-    .regime-badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; color: white; margin-left: 5px; }
-    .regime-trend { background-color: #fd7e14; } /* 橙色趋势 */
-    .regime-chop { background-color: #868e96; } /* 灰色震荡 */
+    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
+    .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
+    .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; }
@@ -56,13 +53,17 @@ st.markdown("""
     .pred-container-wrapper { height: 110px; width: 100%; display: block; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
     .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
+    
+    /* 状态标签 */
+    .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
+    .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. 状态管理 ---
 if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
-# 缓存自检：如果缺少 v8.0 的新字段 (regime, vwap)，清空重跑
-if st.session_state['data_cache'] and 'vwap' not in st.session_state['data_cache'].get('factors', {}):
+# 缓存自检：如果缺少 v8.1 的 grandmaster 字段，清空重跑
+if st.session_state['data_cache'] and 'grandmaster' not in st.session_state['data_cache']:
     st.session_state['data_cache'] = None
     st.rerun()
 
@@ -74,12 +75,12 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
         delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     return f"""<div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
-def macro_html(title, val, delta_str, delta_val):
+def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     color_class = "color-up" if delta_val >= 0 else "color-down"
-    if title == "VIX": color_class = "color-down" if delta_val >= 0 else "color-up"
-    return f"""<div class="macro-box"><div class="macro-title">{title}</div><div class="macro-val">{val}</div><div class="macro-sub {color_class}">{delta_str}</div></div>"""
+    if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
+    return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v8.0")
+st.markdown("### ⚡ BTDR 领航员 v8.1 (宗师版)")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -98,11 +99,16 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-st.markdown("### 🌍 机构因子 (Institutional Factors)")
-m1, m2, m3, m4 = st.columns(4)
-ph_macros = [m1.empty(), m2.empty(), m3.empty(), m4.empty()]
+# 因子面板 (双层)
+st.markdown("### 🌍 宏观环境 (Macro)")
+macro_cols = st.columns(4)
+ph_macros = [col.empty() for col in macro_cols]
 
-st.markdown("### 🎯 智能推演 (Smart MC)")
+st.markdown("### 🔬 微观结构 (Micro)")
+micro_cols = st.columns(4)
+ph_micros = [col.empty() for col in micro_cols]
+
+st.markdown("### 🎯 宗师级推演 (Grandmaster MC)")
 ph_chart = st.empty()
 col_mc1, col_mc2 = st.columns(2)
 with col_mc1: ph_mc_bull = st.empty()
@@ -111,14 +117,14 @@ with col_mc2: ph_mc_bear = st.empty()
 st.markdown("---")
 ph_footer = st.empty()
 
-# --- 5. 核心：机构级量化引擎 ---
+# --- 5. 核心：宗师级量化引擎 ---
 @st.cache_data(ttl=300) 
-def run_institutional_analytics():
+def run_grandmaster_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
-    default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "vol_base": 0.05}
+    default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # 下载数据 (包含 Volume)
+        # 1. 全量数据获取 (BTDR, BTC, QQQ, VIX)
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="3mo", interval="1d", group_by='ticker', threads=True, progress=False)
         
         btdr = data['BTDR'].dropna()
@@ -129,55 +135,54 @@ def run_institutional_analytics():
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
         
-        # --- A. 计算高级因子 ---
+        # --- A. 宏观因子计算 (Macro) ---
+        ret_btdr = btdr['Close'].pct_change()
+        ret_btc = btc['Close'].pct_change()
+        ret_qqq = qqq['Close'].pct_change()
         
-        # 1. VWAP (近似计算：基于收盘价和成交量)
-        # 真实VWAP需要分钟线，这里用日线 (Close * Volume).cumsum / Volume.cumsum 近似长期趋势
-        # 日内VWAP我们会在 render_ui 里用分钟线算，这里算长期支撑位
+        # Beta BTC
+        cov_btc = ret_btdr.rolling(60).cov(ret_btc).iloc[-1]
+        var_btc = ret_btc.rolling(60).var().iloc[-1]
+        beta_btc = cov_btc / var_btc if var_btc != 0 else 1.5
+        
+        # Beta QQQ
+        cov_qqq = ret_btdr.rolling(60).cov(ret_qqq).iloc[-1]
+        var_qqq = ret_qqq.rolling(60).var().iloc[-1]
+        beta_qqq = cov_qqq / var_qqq if var_qqq != 0 else 1.2
+        
+        # --- B. 微观因子计算 (Micro) ---
+        # 1. VWAP (30d)
         btdr['TP'] = (btdr['High'] + btdr['Low'] + btdr['Close']) / 3
         btdr['PV'] = btdr['TP'] * btdr['Volume']
         vwap_30d = btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum()
         
-        # 2. ADX (趋势强度)
-        # 简化版 ADX 计算
+        # 2. ADX
         high = btdr['High']; low = btdr['Low']; close = btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
         up_move = high - high.shift(1); down_move = low.shift(1) - low
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr)
-        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        dx = 100 * np.abs(100*(pd.Series(plus_dm).rolling(14).mean()/atr) - 100*(pd.Series(minus_dm).rolling(14).mean()/atr)) / (100*(pd.Series(plus_dm).rolling(14).mean()/atr) + 100*(pd.Series(minus_dm).rolling(14).mean()/atr))
         adx = dx.rolling(14).mean().iloc[-1]
-        
-        # 判断市场状态 (Regime)
         regime = "Trend" if adx > 25 else "Chop"
         
-        # 3. 量价背离 (OBV Slope)
-        obv = (np.sign(btdr['Close'].diff()) * btdr['Volume']).fillna(0).cumsum()
-        obv_slope = (obv.iloc[-1] - obv.iloc[-5]) / 5 # 5日OBV斜率
+        # 3. RSI
+        delta = btdr['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + gain/loss)).iloc[-1]
         
-        # 4. Beta & Vol
-        ret_btdr = btdr['Close'].pct_change()
-        ret_btc = btc['Close'].pct_change()
-        cov = ret_btdr.rolling(60).cov(ret_btc).iloc[-1]
-        var = ret_btc.rolling(60).var().iloc[-1]
-        beta_btc = cov / var if var != 0 else 1.5
+        # 4. 基础波动率
         vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
 
         factors = {
-            "vwap": vwap_30d,
-            "adx": adx,
-            "regime": regime,
-            "obv_trend": "Bull" if obv_slope > 0 else "Bear",
-            "beta_btc": beta_btc,
+            "beta_btc": beta_btc, "beta_qqq": beta_qqq,
+            "vwap": vwap_30d, "adx": adx, "regime": regime, "rsi": rsi,
             "vol_base": vol_base
         }
         
-        # --- B. 更新模型 ---
-        # 如果是 Trend 状态，增加 Momentum 权重；如果是 Chop，增加 Mean Reversion
-        # 这里直接复用之前的 Regression 逻辑，但参数会传递给前端
+        # --- C. 日内模型参数 (Regression) ---
         df_reg = btdr.tail(30).copy()
         df_reg['PrevClose'] = df_reg['Close'].shift(1)
         df_reg = df_reg.dropna()
@@ -193,7 +198,7 @@ def run_institutional_analytics():
             "beta_sector": 0.25
         }
         
-        return final_model, factors, "Inst. Engine"
+        return final_model, factors, "Grandmaster"
         
     except: return default_model, default_factors, "Offline"
 
@@ -208,17 +213,18 @@ def render_ui(data):
     model_status = data['status']
     
     btc_chg = quotes['BTC-USD']['pct']
+    qqq_chg = quotes.get('QQQ', {'pct': 0})['pct']
     vix_val = quotes.get('^VIX', {'price': 20})['price']
+    vix_chg = quotes.get('^VIX', {'pct': 0})['pct']
     btdr = quotes['BTDR']
     
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     
-    # 状态徽章颜色
-    regime_color = "#fd7e14" if factors['regime'] == "Trend" else "#868e96"
-    regime_html = f"<span style='background-color:{regime_color}; padding:2px 6px; border-radius:4px; font-size:0.7rem; font-weight:bold; color:white; margin-left:5px;'>{factors['regime']}</span>"
+    regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
+    badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
     
-    ph_time.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 市场状态: {regime_html}</div>", unsafe_allow_html=True)
+    ph_time.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span></div>", unsafe_allow_html=True)
     
     ph_btc.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
     ph_fng.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
@@ -235,55 +241,55 @@ def render_ui(data):
     status_tag = f"<span class='status-dot {dot_class}'></span>"
     ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # VWAP 显示 (日内)
-    # 如果日内有数据，粗略估算一个日内 VWAP (P * 1 / 1)
-    # 更好的方式是直接用 30日 VWAP 作为"机构成本线"
-    ph_btdr_open.markdown(card_html("机构成本 (30d VWAP)", f"${factors['vwap']:.2f}", "Support Level", 0), unsafe_allow_html=True)
-
-    # --- 渲染机构因子面板 ---
-    # 显示最核心的4个因子：ADX (状态), VWAP距离, Beta, VIX
-    adx_str = f"{factors['adx']:.1f}"
+    # VWAP 对比
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100
-    
-    ph_macros[0].markdown(macro_html("ADX (趋势强度)", adx_str, factors['regime'], 1 if factors['adx']>25 else -1), unsafe_allow_html=True)
-    ph_macros[1].markdown(macro_html("Vs 机构成本", f"{dist_vwap:+.1f}%", "Premium", dist_vwap), unsafe_allow_html=True)
-    ph_macros[2].markdown(macro_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Leverage", 0), unsafe_allow_html=True)
-    ph_macros[3].markdown(macro_html("VIX (恐慌)", f"{vix_val:.1f}", "Risk", -1 if vix_val>20 else 1), unsafe_allow_html=True)
+    ph_btdr_open.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}% Prem.", dist_vwap), unsafe_allow_html=True)
 
-    # --- 智能推演 (Smart MC) ---
+    # --- 渲染因子面板 (Macro & Micro) ---
+    # 1. Macro
+    ph_macros[0].markdown(factor_html("QQQ (纳指)", f"{qqq_chg:+.2f}%", "Market", qqq_chg), unsafe_allow_html=True)
+    ph_macros[1].markdown(factor_html("VIX (恐慌)", f"{vix_val:.1f}", f"{vix_chg:+.1f}%", -vix_chg, reverse_color=True), unsafe_allow_html=True)
+    ph_macros[2].markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Corr", 0), unsafe_allow_html=True)
+    ph_macros[3].markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Corr", 0), unsafe_allow_html=True)
+    
+    # 2. Micro
+    ph_micros[0].markdown(factor_html("ADX (强度)", f"{factors['adx']:.1f}", factors['regime'], 1 if factors['adx']>25 else -1), unsafe_allow_html=True)
+    ph_micros[1].markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "O/B" if factors['rsi']>70 else ("O/S" if factors['rsi']<30 else "Neu"), 0), unsafe_allow_html=True)
+    ph_micros[2].markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0), unsafe_allow_html=True)
+    
+    # 综合漂移计算 (Total Drift)
+    # 漂移 = 0 (Base) + BTC影响 + QQQ影响
+    drift_est = (btc_chg/100 * factors['beta_btc'] * 0.4) + (qqq_chg/100 * factors['beta_qqq'] * 0.4)
+    # VWAP 回归引力
+    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
+    
+    ph_micros[3].markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est), unsafe_allow_html=True)
+
+    # --- 宗师级蒙特卡洛 (Grandmaster MC) ---
     if btdr['price'] > 0:
         vol = factors['vol_base']
-        beta_b = factors['beta_btc']
         
-        # 智能漂移 (Smart Drift)
-        # 1. 基础漂移：由 BTC 驱动
-        drift = (btc_chg/100 * beta_b * 0.5)
+        # 宗师算法：7因子融合
+        # 1. 基础动量：由 BTC 和 QQQ 当日走势驱动
+        drift = drift_est
         
-        # 2. 状态修正 (Regime Adjustment)
-        # 如果是 "Chop" (震荡)，漂移趋向于 0 (均值回归)
-        # 如果是 "Trend" (趋势)，漂移保持原样，甚至放大
-        if factors['regime'] == "Chop":
-            drift *= 0.5 # 震荡市，上涨动能打折
-            vol *= 0.8   # 震荡市，波动率也通常收敛
+        # 2. 恐慌修正 (VIX)
+        if vix_val > 25: drift -= 0.005; vol *= 1.3
+        if vix_val > 35: drift -= 0.01; vol *= 1.8 # 崩盘模式
         
-        # 3. 恐慌修正
-        if vix_val > 25: 
-            drift -= 0.005 # 强行扣减
-            vol *= 1.5     # 波动率激增
-            
-        # 4. VWAP 修正 (引力)
-        # 价格偏离 VWAP 太远会有回归引力
-        if dist_vwap > 15: drift -= 0.002 # 涨太多了，引力向下
-        if dist_vwap < -15: drift += 0.002 # 跌太多了，引力向上
-
-        simulations = 500
-        days_ahead = 5
-        paths = []
+        # 3. 均值回归修正 (RSI)
+        if factors['rsi'] > 75: drift -= 0.003
+        if factors['rsi'] < 25: drift += 0.003
+        
+        # 4. 状态修正 (Regime)
+        if factors['regime'] == "Chop": drift *= 0.5; vol *= 0.8
+        
+        # 运行模拟
+        simulations = 500; days_ahead = 5; paths = []
         current = btdr['price']
         
         for i in range(simulations):
-            path = [current]
-            p = current
+            path = [current]; p = current
             for d in range(days_ahead):
                 shock = np.random.normal(0, 1)
                 change = (drift - 0.5 * vol**2) + vol * shock
@@ -313,11 +319,11 @@ def render_ui(data):
         ph_mc_bull.markdown(card_html("P90 强压位", f"${p90_end:.2f}", f"{p90_pct:+.1f}%", p90_pct), unsafe_allow_html=True)
         ph_mc_bear.markdown(card_html("P10 强撑位", f"${p10_end:.2f}", f"{p10_pct:+.1f}%", p10_pct), unsafe_allow_html=True)
 
-    ph_footer.caption(f"Engine: v8.0 Institutional | Regime: {factors['regime']} | VWAP Adj: {'Active' if abs(dist_vwap)>10 else 'None'}")
+    ph_footer.caption(f"Engine: v8.1 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
-def get_data_v80():
+def get_data_v81():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     try:
         daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
@@ -325,7 +331,6 @@ def get_data_v80():
         quotes = {}
         symbols = tickers_list.split()
         today_ny = datetime.now(pytz.timezone('America/New_York')).date()
-        
         for sym in symbols:
             try:
                 df_day = daily[sym] if sym in daily else pd.DataFrame()
@@ -352,14 +357,14 @@ def get_data_v80():
     except: return None
 
 # --- 8. 执行流 ---
-if st.session_state['data_cache'] and 'factors' in st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
-else: ph_time.info("📡 正在计算 VWAP 和 ADX...")
+if st.session_state['data_cache'] and 'grandmaster' in st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
+else: ph_time.info("📡 正在融合宏观与微观模型...")
 
-new_quotes = get_data_v80()
-ai_model, ai_factors, ai_status = run_institutional_analytics()
+new_quotes = get_data_v81()
+ai_model, ai_factors, ai_status = run_grandmaster_analytics()
 
 if new_quotes:
     try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
     except: fng = 50
-    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'factors': ai_factors, 'status': ai_status}
+    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'factors': ai_factors, 'status': ai_status, 'grandmaster': True}
     render_ui(st.session_state['data_cache'])
