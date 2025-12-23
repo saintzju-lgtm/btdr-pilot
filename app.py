@@ -5,18 +5,18 @@ import numpy as np
 import altair as alt
 from datetime import datetime, timedelta
 import pytz
+import requests
 import shutil
 import os
-import requests
 
-# --- 0. 缓存清理 ---
+# --- 0. 缓存清理 (防止脏数据) ---
 try:
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "yfinance")
     if os.path.exists(cache_dir): shutil.rmtree(cache_dir)
 except: pass
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v9.7", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.8", layout="centered")
 
 # CSS: v9.1 的视觉风格 (防抖 + 悬停)
 st.markdown("""
@@ -90,32 +90,99 @@ def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=Fa
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="tooltip-text">{tooltip_text}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-# --- 3. 数据引擎 (v7.5 逻辑复刻 + 因子计算) ---
-# 不使用缓存，确保每次 Fragment 刷新都重新拉取数据
-def fetch_v75_logic_data():
+# --- 3. 历史数据引擎 (缓存 5 分钟) ---
+# 负责：VWAP, ADX, Beta, 模型参数
+@st.cache_data(ttl=300)
+def fetch_history_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
     default_factors = {"vwap": 10.0, "adx": 20.0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # 1. 抓取数据 (1年日线用于因子，1天分钟线用于实时)
-        tickers = "BTDR BTC-USD QQQ ^VIX MARA RIOT CORZ CLSK IREN"
-        data_day = yf.download(tickers, period="1y", interval="1d", group_by='ticker', threads=False, progress=False)
+        tickers = "BTDR BTC-USD QQQ"
+        # 抓取 1 年数据以确保 ADX/VWAP 计算准确
+        data = yf.download(tickers, period="1y", interval="1d", group_by='ticker', threads=False, progress=False)
+        
+        btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
+        idx = btdr.index.intersection(btc.index).intersection(qqq.index)
+        
+        if len(idx) < 30: return default_model, default_factors
+        
+        btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
+        
+        # 计算因子
+        ret_btdr = btdr['Close'].pct_change()
+        ret_btc = btc['Close'].pct_change()
+        ret_qqq = qqq['Close'].pct_change()
+        
+        beta_btc = (ret_btdr.rolling(60).cov(ret_btc)/ret_btc.rolling(60).var()).iloc[-1]
+        beta_qqq = (ret_btdr.rolling(60).cov(ret_qqq)/ret_qqq.rolling(60).var()).iloc[-1]
+        
+        btdr['TP'] = (btdr['High']+btdr['Low']+btdr['Close'])/3
+        btdr['PV'] = btdr['TP']*btdr['Volume']
+        vwap = btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum()
+        
+        # ADX
+        high = btdr['High']; low = btdr['Low']; close = btdr['Close']
+        tr = np.maximum(high-low, np.abs(high-close.shift(1)))
+        atr = tr.rolling(14).mean()
+        up = high-high.shift(1); down = low.shift(1)-low
+        p_dm = np.where((up>down)&(up>0), up, 0); m_dm = np.where((down>up)&(down>0), down, 0)
+        p_di = 100*(pd.Series(p_dm, index=btdr.index).rolling(14).mean()/atr)
+        m_di = 100*(pd.Series(m_dm, index=btdr.index).rolling(14).mean()/atr)
+        dx = 100*np.abs(p_di-m_di)/(p_di+m_di)
+        adx = dx.rolling(14).mean().iloc[-1]
+        if np.isnan(adx): adx = 20
+        
+        # RSI
+        delta = btdr['Close'].diff()
+        gain = (delta.where(delta>0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta<0, 0)).rolling(14).mean()
+        rsi = 100 - (100/(1 + gain/loss)).iloc[-1]
+        vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
+        
+        if np.isnan(beta_btc): beta_btc = 1.5
+        if np.isnan(vwap): vwap = btdr['Close'].iloc[-1]
+        
+        factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap, "adx": adx, "regime": "Trend" if adx>25 else "Chop", "rsi": rsi, "vol_base": vol_base}
+        
+        # 回归模型
+        df_reg = btdr.tail(30).copy()
+        df_reg['PrevClose'] = df_reg['Close'].shift(1); df_reg = df_reg.dropna()
+        x = ((df_reg['Open']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
+        y_h = ((df_reg['High']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
+        y_l = ((df_reg['Low']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
+        cov_h = np.cov(x, y_h); b_h = cov_h[0,1]/cov_h[0,0] if cov_h[0,0]!=0 else 0.7
+        cov_l = np.cov(x, y_l); b_l = cov_l[0,1]/cov_l[0,0] if cov_l[0,0]!=0 else 0.9
+        
+        model = {
+            "high": {"intercept": 0.7*4.29 + 0.3*(np.mean(y_h)-b_h*np.mean(x)), "beta_open": 0.7*0.67 + 0.3*b_h, "beta_btc": 0.52},
+            "low": {"intercept": 0.7*-3.22 + 0.3*(np.mean(y_l)-b_l*np.mean(x)), "beta_open": 0.7*0.88 + 0.3*b_l, "beta_btc": 0.42},
+            "beta_sector": 0.25
+        }
+        return model, factors
+    except: return default_model, default_factors
+
+# --- 4. 实时数据引擎 (无缓存，复刻 v7.5 逻辑) ---
+# 负责：实时价格、开盘价、涨跌幅
+def fetch_realtime_quotes():
+    tickers = "BTDR BTC-USD QQQ ^VIX MARA RIOT CORZ CLSK IREN"
+    try:
+        # 同时抓取日线(兜底)和分钟线(实时)
+        data_day = yf.download(tickers, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
         data_min = yf.download(tickers, period="1d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
         
         quotes = {}
         symbols = tickers.split()
         today_ny = datetime.now(pytz.timezone('America/New_York')).date()
         
-        # 2. 处理行情 (严格遵循 v7.5 的兜底逻辑)
         for sym in symbols:
             try:
                 df_d = data_day[sym] if sym in data_day else pd.DataFrame()
                 df_m = data_min[sym] if sym in data_min else pd.DataFrame()
                 
-                # A. 确定实时价格 (Price)
+                # A. 确定价格 (优先分钟线)
                 price = 0.0
                 state = "ERR"
-                
                 if not df_m.empty and not pd.isna(df_m['Close'].iloc[-1]):
                     price = float(df_m['Close'].iloc[-1])
                     state = "REG"
@@ -123,122 +190,51 @@ def fetch_v75_logic_data():
                     price = float(df_d['Close'].iloc[-1])
                     state = "CLOSED"
                 
-                # B. 确定基准 (Prev Close & Open)
+                # B. 确定基准 (Prev & Open) - v7.5 逻辑
                 prev = 0.0
                 open_p = 0.0
                 
                 if not df_d.empty:
-                    # 检查日线最后一行是不是今天
                     last_dt = df_d.index[-1].date()
                     
-                    if last_dt == today_ny:
-                        # 如果日线已经更新到了今天
-                        # 昨收 = 倒数第二根 Close (如果有)
-                        prev = float(df_d['Close'].iloc[-2]) if len(df_d) > 1 else float(df_d['Open'].iloc[-1])
-                        # 开盘 = 今天的 Open
+                    if last_dt == today_ny and len(df_d) > 1:
+                        # 交易中：昨收是倒数第二根
+                        prev = float(df_d['Close'].iloc[-2])
                         open_p = float(df_d['Open'].iloc[-1])
                     else:
-                        # 如果日线还停留在昨天 (盘前或刚开盘可能发生)
-                        # 昨收 = 最后一根 Close
+                        # 盘前或未开盘：昨收是最后一根
                         prev = float(df_d['Close'].iloc[-1])
-                        # 开盘 = 还没出日线Open，暂时用实时价代替，或者用昨收代替，防止 nan
+                        # 开盘价暂用当前价
                         open_p = price if price > 0 else prev
                 
-                # C. 最终清洗 (防止 0 或 nan)
-                if price == 0 and prev > 0: price = prev
-                if prev == 0 and price > 0: prev = price
-                if open_p == 0 and price > 0: open_p = price
-                
-                # 兜底：如果还是 0 (比如新股或数据全挂)，给个默认值防止报错，但标记 ERR
-                if price == 0: price = 10.0; state = "ERR"
-                if prev == 0: prev = 10.0
-                if open_p == 0: open_p = 10.0
+                # 兜底
+                if price == 0: price = 10.0
+                if prev == 0: prev = price
+                if open_p == 0: open_p = price
                 
                 pct = ((price - prev) / prev) * 100
-                
                 quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": open_p, "tag": state}
             except:
                 quotes[sym] = {"price": 0.0, "pct": 0.0, "prev": 10.0, "open": 10.0, "tag": "ERR"}
-
-        # 3. 计算因子 (v9.0 逻辑)
-        btdr = data_day['BTDR'].dropna(); btc = data_day['BTC-USD'].dropna(); qqq = data_day['QQQ'].dropna()
-        idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         
-        if len(idx) > 30:
-            btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
-            
-            # Beta
-            rb = btdr['Close'].pct_change(); rc = btc['Close'].pct_change(); rq = qqq['Close'].pct_change()
-            beta_btc = (rb.rolling(60).cov(rc)/rc.rolling(60).var()).iloc[-1]
-            beta_qqq = (rb.rolling(60).cov(rq)/rq.rolling(60).var()).iloc[-1]
-            
-            # VWAP
-            btdr['TP'] = (btdr['High']+btdr['Low']+btdr['Close'])/3
-            vwap = (btdr['TP']*btdr['Volume']).tail(30).sum() / btdr['Volume'].tail(30).sum()
-            
-            # ADX
-            high = btdr['High']; low = btdr['Low']; close = btdr['Close']
-            tr = np.maximum(high-low, np.abs(high-close.shift(1)))
-            atr = tr.rolling(14).mean()
-            up = high-high.shift(1); down = low.shift(1)-low
-            p_dm = np.where((up>down)&(up>0), up, 0); m_dm = np.where((down>up)&(down>0), down, 0)
-            p_di = 100*(pd.Series(p_dm, index=btdr.index).rolling(14).mean()/atr)
-            m_di = 100*(pd.Series(m_dm, index=btdr.index).rolling(14).mean()/atr)
-            dx = 100*np.abs(p_di-m_di)/(p_di+m_di)
-            adx = dx.rolling(14).mean().iloc[-1]
-            
-            # RSI & Vol
-            delta = btdr['Close'].diff()
-            gain = (delta.where(delta>0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta<0, 0)).rolling(14).mean()
-            rsi = 100 - (100/(1 + gain/loss)).iloc[-1]
-            vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
-            
-            # 清洗 nan
-            if np.isnan(beta_btc): beta_btc = 1.5
-            if np.isnan(vwap) or vwap == 0: vwap = quotes['BTDR']['price']
-            if np.isnan(adx): adx = 25
-            if np.isnan(vol_base): vol_base = 0.05
-            
-            factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap, "adx": adx, "regime": "Trend" if adx>25 else "Chop", "rsi": rsi, "vol_base": vol_base}
-            
-            # Regression
-            df_reg = btdr.tail(30).copy()
-            df_reg['PrevClose'] = df_reg['Close'].shift(1); df_reg = df_reg.dropna()
-            x = ((df_reg['Open']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
-            y_h = ((df_reg['High']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
-            y_l = ((df_reg['Low']-df_reg['PrevClose'])/df_reg['PrevClose']*100).values
-            cov_h = np.cov(x, y_h); b_h = cov_h[0,1]/cov_h[0,0] if cov_h[0,0]!=0 else 0.7
-            cov_l = np.cov(x, y_l); b_l = cov_l[0,1]/cov_l[0,0] if cov_l[0,0]!=0 else 0.9
-            
-            model = {
-                "high": {"intercept": 0.7*4.29 + 0.3*(np.mean(y_h)-b_h*np.mean(x)), "beta_open": 0.7*0.67 + 0.3*b_h, "beta_btc": 0.52},
-                "low": {"intercept": 0.7*-3.22 + 0.3*(np.mean(y_l)-b_l*np.mean(x)), "beta_open": 0.7*0.88 + 0.3*b_l, "beta_btc": 0.42},
-                "beta_sector": 0.25
-            }
-        else:
-            model = default_model
-            factors = default_factors
-            
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
         except: fng = 50
         
-        return quotes, fng, model, factors
-    except Exception as e:
-        # print(e)
-        return None, 50, default_model, default_factors
+        return quotes, fng
+    except: return None, 50
 
-# --- 4. 局部刷新容器 (UI Render) ---
+# --- 5. 仪表盘渲染 (Fragment 局部刷新) ---
 @st.fragment(run_every=5) 
 def dashboard():
     # 1. 抓取数据
-    quotes, fng_val, model, factors = fetch_v75_logic_data()
+    model, factors = fetch_history_analytics()
+    quotes, fng_val = fetch_realtime_quotes()
     
     if not quotes:
-        st.warning("正在连接交易所数据流 (Retrying)...")
+        st.warning("正在连接交易所数据流...")
         return
 
-    # 2. 准备显示变量
+    # 2. 准备变量
     btdr = quotes['BTDR']
     btc_chg = quotes['BTC-USD']['pct']
     qqq_chg = quotes.get('QQQ', {'pct': 0})['pct']
@@ -250,7 +246,7 @@ def dashboard():
     badge_color = "#fd7e14" if factors['regime'] == "Trend" else "#868e96"
     
     # 3. 顶栏
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span style='background:{badge_color};color:white;padding:1px 4px;border-radius:3px;font-size:0.6rem'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: v9.7 (Hybrid-Fix)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span style='background:{badge_color};color:white;padding:1px 4px;border-radius:3px;font-size:0.6rem'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: v9.8 (Hybrid)</div>", unsafe_allow_html=True)
     
     # 4. 核心指标
     c1, c2 = st.columns(2)
@@ -266,16 +262,13 @@ def dashboard():
         cols[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
     st.markdown("---")
     
-    # 5. BTDR 三栏布局 (回归 v7.5 逻辑：实时 | 开盘 | VWAP)
+    # 5. BTDR 三栏布局 (实时 | 开盘 | VWAP)
     c_live, c_open, c_vwap = st.columns(3)
-    state_map = {"PRE": "dot-reg", "REG": "dot-reg", "POST": "dot-reg", "CLOSED": "dot-closed"}
-    dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
-    status_tag = f"<span class='status-dot {dot_class}'></span>"
+    status_tag = f"<span class='status-dot dot-reg'></span>"
     
     with c_live: st.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # 开盘价涨幅 (vs 昨收)
-    # 这里的 btdr['open'] 是由 v7.5 逻辑从数据源中清洗出来的，肯定有数
+    # 计算开盘涨幅 (v7.5 逻辑: open vs prev)
     open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100 if btdr['prev'] > 0 else 0
     with c_open: st.markdown(card_html("计算用开盘", f"${btdr['open']:.2f}", f"{open_pct:+.2f}%", open_pct), unsafe_allow_html=True)
     
@@ -290,7 +283,7 @@ def dashboard():
     sentiment_adj = (fng_val - 50) * 0.02
     
     MODEL = model
-    # 使用 open_pct (相对昨收) 驱动预测
+    # 使用 open_pct 驱动预测
     pred_high_pct = (MODEL['high']['intercept'] + (MODEL['high']['beta_open'] * open_pct) + (MODEL['high']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
     pred_low_pct = (MODEL['low']['intercept'] + (MODEL['low']['beta_open'] * open_pct) + (MODEL['low']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
     
@@ -362,16 +355,16 @@ def dashboard():
     points = base.mark_circle(size=60, color="black").encode(y='P50', opacity=alt.condition(nearest, alt.value(1), alt.value(0)), tooltip=[alt.Tooltip('Day', title='T+'), alt.Tooltip('P90', title='P90 (High)', format='.2f'), alt.Tooltip('P50', title='P50 (Median)', format='.2f'), alt.Tooltip('P10', title='P10 (Low)', format='.2f')])
     
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v9.7 Hybrid | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v9.8 Hybrid | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 8. 执行 ---
 if __name__ == "__main__":
-    st.markdown("### ⚡ BTDR 领航员 v9.7")
+    st.markdown("### ⚡ BTDR 领航员 v9.8")
     dashboard()
     
     with st.expander("📖 参数详解手册"):
         st.markdown("""
-        * **计算用开盘**: 交易时段为今日开盘价；盘前或休市时为最新参考价。
+        * **计算用开盘**: 今日开盘价。若无数据则自动回溯昨收。
         * **VWAP**: 机构成本线。价格高于此线说明强势。
         * **P90/P10**: 预测价格的置信区间 (90%概率会落在此区间内)。
         """)
