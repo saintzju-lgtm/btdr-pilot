@@ -10,25 +10,21 @@ import os
 import requests
 
 # ==========================================
-# 1. 配置与初始化 (最优先执行)
+# 1. 配置与初始化
 # ==========================================
-st.set_page_config(page_title="BTDR Pilot v10.1", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.1", layout="centered")
 
-# 强制清理缓存，防止旧数据干扰
-if 'init_v10_1' not in st.session_state:
-    try:
-        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "yfinance")
-        if os.path.exists(cache_dir): shutil.rmtree(cache_dir)
-    except: pass
-    st.session_state.clear()
-    st.session_state['init_v10_1'] = True
+# 清理缓存
+try:
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "yfinance")
+    if os.path.exists(cache_dir): shutil.rmtree(cache_dir)
+except: pass
 
 # ==========================================
-# 2. CSS 样式 (防抖 + 悬停提示)
+# 2. CSS 样式 (v9.1 原版风格：防抖 + 悬停)
 # ==========================================
 st.markdown("""
     <style>
-    /* 全局设置 */
     html { overflow-y: scroll; }
     .stApp > header { display: none; }
     .stApp { margin-top: -30px; background-color: #ffffff; }
@@ -37,39 +33,38 @@ st.markdown("""
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 图表容器锁定 (防抖) */
+    /* 图表锁定 */
     div[data-testid="stAltairChart"] {
-        height: 300px !important; min-height: 300px !important; overflow: hidden !important; border: 1px solid #f8f9fa;
+        height: 320px !important; min-height: 320px !important; overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     canvas { transition: none !important; animation: none !important; }
     
     /* 指标卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
-        height: 95px; padding: 0 16px; display: flex; flex-direction: column; justify-content: center;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
+        display: flex; flex-direction: column; justify-content: center;
     }
     .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
-    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.1; }
-    .metric-delta { font-size: 0.85rem; font-weight: 600; margin-top: 2px; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
+    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
     /* 因子卡片 (带 Tooltip) */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
-        position: relative; cursor: help;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02); position: relative; cursor: help;
     }
-    .factor-box:hover { border-color: #adb5bd; transform: translateY(-1px); }
-    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; }
-    .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; }
+    .factor-box:hover { transform: translateY(-1px); border-color: #ced4da; }
+    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
+    .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
     /* Tooltip 悬浮窗 */
     .tooltip-text {
-        visibility: hidden; width: 150px; background-color: rgba(0,0,0,0.9); color: #fff !important;
-        text-align: center; border-radius: 4px; padding: 6px; position: absolute; z-index: 1000;
-        bottom: 115%; left: 50%; margin-left: -75px; opacity: 0; transition: opacity 0.2s;
+        visibility: hidden; width: 160px; background-color: rgba(0,0,0,0.9); color: #fff !important;
+        text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 1000;
+        bottom: 115%; left: 50%; margin-left: -80px; opacity: 0; transition: opacity 0.2s;
         font-size: 0.7rem !important; pointer-events: none; font-weight: normal; line-height: 1.4;
     }
     .tooltip-text::after {
@@ -82,25 +77,23 @@ st.markdown("""
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; }
     .dot-reg { background-color: #0ca678; } .dot-closed { background-color: #adb5bd; }
     
-    .pred-container-wrapper { height: 100px; width: 100%; display: block; margin-top: 5px; }
+    .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
-    .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 15px; padding: 4px; background: #fafafa; border-radius: 4px; }
+    .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
     .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     </style>
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 核心工具函数
+# 3. 辅助函数
 # ==========================================
 def safe_num(val, default=0.0):
-    """强力清洗数据，拒绝 NaN"""
     try:
         if val is None: return default
         if isinstance(val, (pd.Series, pd.DataFrame)):
             if val.empty: return default
             val = val.iloc[-1]
-        
         f = float(val)
         if np.isnan(f) or np.isinf(f): return default
         return f
@@ -109,109 +102,94 @@ def safe_num(val, default=0.0):
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     delta_html = ""
     if delta_str:
-        c = "color-up" if delta_val >= 0 else "color-down"
-        delta_html = f"<div class='metric-delta {c}'>{delta_str}</div>"
+        color_class = "color-up" if delta_val >= 0 else "color-down"
+        delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     return f"""<div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
-def factor_html(title, val, delta_str, delta_val, tooltip, rev=False):
-    c = "color-up" if delta_val >= 0 else "color-down"
-    if rev: c = "color-down" if delta_val >= 0 else "color-up"
-    return f"""<div class="factor-box"><div class="tooltip-text">{tooltip}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {c}">{delta_str}</div></div>"""
+def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
+    color_class = "color-up" if delta_val >= 0 else "color-down"
+    if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
+    return f"""<div class="factor-box"><div class="tooltip-text">{tooltip_text}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
 # ==========================================
-# 4. 数据获取引擎 (V7.5 逻辑 + V9.0 因子)
+# 4. 数据获取引擎 (V9.1 架构 + V7.5 强力兜底)
 # ==========================================
 def fetch_all_data():
-    # 默认兜底数据
-    quotes = {}
-    model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
-    factors = {"vwap": 10.0, "adx": 20.0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
-    fng = 50
+    tickers = "BTDR BTC-USD QQQ ^VIX MARA RIOT CORZ CLSK IREN"
+    
+    # 默认值
+    default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
+    default_factors = {"vwap": 10.0, "adx": 20.0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        tickers = "BTDR BTC-USD QQQ ^VIX MARA RIOT CORZ CLSK IREN"
+        # 1. 抓取数据 (1年历史 + 1天分钟)
+        data_day = yf.download(tickers, period="1y", interval="1d", group_by='ticker', threads=False, progress=False)
+        data_min = yf.download(tickers, period="1d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
         
-        # 1. 抓取数据 (不使用多线程以稳定)
-        # 历史数据 (计算因子)
-        hist = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
-        # 实时数据 (实时报价)
-        live = yf.download(tickers, period="1d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
-        
+        quotes = {}
+        symbols = tickers.split()
         today_ny = datetime.now(pytz.timezone('America/New_York')).date()
-        syms = tickers.split()
         
-        # 2. 处理 Quotes (V7.5 逻辑)
-        for s in syms:
+        # --- A. 处理报价 (Quotes) ---
+        for sym in symbols:
             try:
-                df_d = hist[s] if s in hist else pd.DataFrame()
-                df_m = live[s] if s in live else pd.DataFrame()
+                df_d = data_day[sym] if sym in data_day else pd.DataFrame()
+                df_m = data_min[sym] if sym in data_min else pd.DataFrame()
                 
-                # A. 价格 (优先分钟线 -> 兜底日线)
+                # 1. 确定价格 (优先分钟线，兜底日线)
                 price = 0.0
                 state = "ERR"
                 if not df_m.empty:
                     val = safe_num(df_m['Close'])
-                    if val > 0: price = val; state = "REG"
+                    if val > 0: 
+                        price = val
+                        state = "REG"
                 
                 if price == 0 and not df_d.empty:
                     price = safe_num(df_d['Close'])
                     state = "CLOSED"
                 
-                # B. 基准 (Prev & Open)
+                # 2. 确定基准 (昨收 Prev & 开盘 Open)
                 prev = 0.0
                 open_p = 0.0
+                
                 if not df_d.empty:
                     last_dt = df_d.index[-1].date()
                     if last_dt == today_ny and len(df_d) > 1:
-                        # 交易中
                         prev = safe_num(df_d['Close'].iloc[-2])
                         open_p = safe_num(df_d['Open'].iloc[-1])
                     else:
-                        # 未开盘
                         prev = safe_num(df_d['Close'].iloc[-1])
-                        open_p = price # 暂用当前价
+                        open_p = price # 还没开盘，暂用当前价
                 
-                # C. 兜底
+                # 3. 最终兜底
                 if price == 0: price = 10.0
                 if prev == 0: prev = price
                 if open_p == 0: open_p = price
                 
                 pct = ((price - prev) / prev) * 100
-                quotes[s] = {"price": price, "pct": pct, "prev": prev, "open": open_p, "tag": state}
+                quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": open_p, "tag": state}
             except:
-                quotes[s] = {"price": 10.0, "pct": 0.0, "prev": 10.0, "open": 10.0, "tag": "ERR"}
-                
-        # 3. 计算因子 (V9.0 逻辑)
-        btdr = hist['BTDR'].dropna()
-        btc = hist['BTC-USD'].dropna()
-        qqq = hist['QQQ'].dropna()
-        
+                quotes[sym] = {"price": 10.0, "pct": 0.0, "prev": 10.0, "open": 10.0, "tag": "ERR"}
+
+        # --- B. 计算因子 (Factors) ---
+        btdr = data_day['BTDR'].dropna(); btc = data_day['BTC-USD'].dropna(); qqq = data_day['QQQ'].dropna()
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
-        if len(idx) > 20:
-            btdr = btdr.loc[idx]
-            btc = btc.loc[idx]
-            qqq = qqq.loc[idx]
+        
+        if len(idx) > 30:
+            btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
             
             rb = btdr['Close'].pct_change()
             rc = btc['Close'].pct_change()
             rq = qqq['Close'].pct_change()
             
-            # Beta
-            beta_btc = safe_num((rb.rolling(30).cov(rc)/rc.rolling(30).var()).iloc[-1], 1.5)
-            beta_qqq = safe_num((rb.rolling(30).cov(rq)/rq.rolling(30).var()).iloc[-1], 1.2)
+            beta_btc = safe_num((rb.rolling(60).cov(rc)/rc.rolling(60).var()).iloc[-1], 1.5)
+            beta_qqq = safe_num((rb.rolling(60).cov(rq)/rq.rolling(60).var()).iloc[-1], 1.2)
             
-            # VWAP
             btdr['TP'] = (btdr['High']+btdr['Low']+btdr['Close'])/3
             btdr['PV'] = btdr['TP']*btdr['Volume']
-            vwap = safe_num(btdr['PV'].tail(20).sum() / btdr['Volume'].tail(20).sum(), quotes['BTDR']['price'])
+            vwap = safe_num(btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum(), quotes['BTDR']['price'])
             
-            # RSI
-            delta = btdr['Close'].diff()
-            gain = (delta.where(delta>0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta<0, 0)).rolling(14).mean()
-            rsi = safe_num(100 - (100/(1 + gain/loss)).iloc[-1], 50)
-            
-            # ADX
             high = btdr['High']; low = btdr['Low']; close = btdr['Close']
             tr = np.maximum(high-low, np.abs(high-close.shift(1)))
             atr = tr.rolling(14).mean()
@@ -220,24 +198,22 @@ def fetch_all_data():
             p_di = 100 * p_dm.rolling(14).mean() / atr
             m_di = 100 * m_dm.rolling(14).mean() / atr
             dx = 100 * np.abs(p_di-m_di)/(p_di+m_di)
-            adx = safe_num(dx.rolling(14).mean().iloc[-1], 20)
+            adx = safe_num(dx.rolling(14).mean().iloc[-1], 20.0)
             
-            factors = {
-                "beta_btc": beta_btc, 
-                "beta_qqq": beta_qqq, 
-                "vwap": vwap, 
-                "adx": adx, 
-                "regime": "Trend" if adx>25 else "Chop", 
-                "rsi": rsi, 
-                "vol_base": safe_num(rb.std(), 0.05)
-            }
+            delta = btdr['Close'].diff()
+            gain = (delta.where(delta>0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta<0, 0)).rolling(14).mean()
+            rsi = safe_num(100 - (100/(1 + gain/loss)).iloc[-1], 50.0)
+            vol_base = safe_num(rb.ewm(span=20).std().iloc[-1], 0.05)
             
-            # Regression
-            df_r = btdr.tail(30).copy()
-            df_r['Prev'] = df_r['Close'].shift(1); df_r.dropna(inplace=True)
-            x = ((df_r['Open']-df_r['Prev'])/df_r['Prev']*100).values
-            yh = ((df_r['High']-df_r['Prev'])/df_r['Prev']*100).values
-            yl = ((df_r['Low']-df_r['Prev'])/df_r['Prev']*100).values
+            factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap, "adx": adx, "regime": "Trend" if adx>25 else "Chop", "rsi": rsi, "vol_base": vol_base}
+            
+            # Regression Model
+            df_reg = btdr.tail(30).copy()
+            df_reg['Prev'] = df_reg['Close'].shift(1); df_reg.dropna(inplace=True)
+            x = ((df_reg['Open']-df_reg['Prev'])/df_reg['Prev']*100).values
+            yh = ((df_reg['High']-df_reg['Prev'])/df_reg['Prev']*100).values
+            yl = ((df_reg['Low']-df_reg['Prev'])/df_reg['Prev']*100).values
             ch = np.cov(x, yh); bh = safe_num(ch[0,1]/ch[0,0], 0.7)
             cl = np.cov(x, yl); bl = safe_num(cl[0,1]/cl[0,0], 0.9)
             
@@ -246,12 +222,14 @@ def fetch_all_data():
                 "low": {"intercept": 0.7*-3.22 + 0.3*(np.mean(yl)-bl*np.mean(x)), "beta_open": 0.7*0.88+0.3*bl, "beta_btc": 0.42},
                 "beta_sector": 0.25
             }
+        else:
+            model = default_model
+            factors = default_factors
             
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
         except: fng = 50
         
         return quotes, fng, model, factors
-        
     except:
         return quotes, 50, default_model, default_factors
 
@@ -260,12 +238,11 @@ def fetch_all_data():
 # ==========================================
 @st.fragment(run_every=5)
 def dashboard():
-    # 1. 抓取数据
+    # 1. 获取数据
     quotes, fng_val, model, factors = fetch_all_data()
     
-    # 如果抓取彻底失败，显示载入中
-    if not quotes or 'BTDR' not in quotes:
-        st.info("⌛ 正在建立数据连接...")
+    if not quotes:
+        st.warning("正在连接交易所数据流 (Retrying)...")
         return
 
     # 2. 变量解包
@@ -279,7 +256,7 @@ def dashboard():
     badge_c = "#fd7e14" if factors['regime']=="Trend" else "#868e96"
     
     # 3. 状态栏
-    st.markdown(f"<div class='time-bar'>美东 {now_str} &nbsp;|&nbsp; 状态: <span style='background:{badge_c};color:white;padding:1px 3px;border-radius:3px;font-size:0.6rem'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: v10.1</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_str} &nbsp;|&nbsp; 状态: <span style='background:{badge_c};color:white;padding:1px 3px;border-radius:3px;font-size:0.6rem'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: v9.1 (Restored)</div>", unsafe_allow_html=True)
     
     # 4. 第一行
     c1, c2 = st.columns(2)
@@ -287,7 +264,7 @@ def dashboard():
     c2.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
     
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-    st.caption("⚒️ 矿股板块")
+    st.caption("⚒️ 矿股板块 Beta")
     cols = st.columns(5)
     peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
     for i, p in enumerate(peers):
@@ -394,11 +371,11 @@ def dashboard():
     )
     
     st.altair_chart((area+l90+l50+l10+sel+pts).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.1 Final | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v9.1 Restored | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # ==========================================
 # 6. 执行 (最后一步)
 # ==========================================
 if __name__ == "__main__":
-    st.markdown("### ⚡ BTDR 领航员 v10.1")
+    st.markdown("### ⚡ BTDR 领航员 v9.1")
     dashboard()
