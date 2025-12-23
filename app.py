@@ -8,12 +8,10 @@ import altair as alt
 from datetime import datetime, timedelta
 import pytz
 
-# 注意：这里不需要再导入 st_autorefresh 了，我们用原生更高级的 fragment
-
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.8", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.9", layout="centered")
 
-# CSS: 依然保留 CSS 锁定，作为双重保险
+# CSS: 磐石级防抖 (Anti-Jitter)
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -21,11 +19,11 @@ st.markdown("""
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    h1, h2, h3, div, p, span { 
+    h1, h2, h3, div, p, span, li { 
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 锁定图表高度，配合 fragment 使用效果更佳 */
+    /* 锁定图表高度 */
     div[data-testid="stAltairChart"] {
         height: 320px !important;
         min-height: 320px !important;
@@ -60,6 +58,10 @@ st.markdown("""
     .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
     .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
+    
+    /* 说明书样式 */
+    .glossary-text { font-size: 0.85rem; line-height: 1.6; color: #555 !important; }
+    .glossary-title { font-weight: bold; color: #000 !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -76,7 +78,7 @@ def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-# --- 3. 核心计算逻辑 (缓存以提高性能) ---
+# --- 3. 核心计算逻辑 ---
 @st.cache_data(ttl=300) 
 def run_grandmaster_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
@@ -140,7 +142,7 @@ def run_grandmaster_analytics():
         return final_model, factors, "Grandmaster"
     except: return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据获取 (保持极速) ---
+# --- 4. 实时数据获取 ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     try:
@@ -171,8 +173,7 @@ def get_realtime_data():
         return quotes, fng
     except: return None, 50
 
-# --- 5. 【关键】Fragment 局部刷新容器 ---
-# 这是解决跳顶和抖动的终极方案。只有这个函数内部会每5秒刷新，页面其他部分（包括滚动条位置）保持不动。
+# --- 5. Fragment 局部刷新容器 ---
 @st.fragment(run_every=5) 
 def show_live_dashboard():
     # 1. 获取数据
@@ -191,14 +192,11 @@ def show_live_dashboard():
     
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
-    
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
     
-    # 2. 渲染顶部状态栏
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v8.8 (Fragment)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v8.9 (Manual)</div>", unsafe_allow_html=True)
     
-    # 3. 渲染核心指标
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
     with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
@@ -214,18 +212,15 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # 4. BTDR 本体与日内预测
     c3, c4 = st.columns(2)
     state_map = {"PRE": "dot-reg", "REG": "dot-reg", "POST": "dot-reg", "CLOSED": "dot-closed"}
     dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
     status_tag = f"<span class='status-dot {dot_class}'></span>"
-    
     with c3: st.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100
     with c4: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}% Prem.", dist_vwap), unsafe_allow_html=True)
 
-    # 日内计算
     btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
     peers_avg = sum(quotes[p]['pct'] for p in peers if p in quotes) / 5
     sector_alpha = peers_avg - btc_chg
@@ -245,7 +240,6 @@ def show_live_dashboard():
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">日内阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">日内支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # 5. 因子面板
     st.markdown("---")
     st.markdown("### 🌍 宏观环境 (Macro)")
     m1, m2, m3, m4 = st.columns(4)
@@ -264,7 +258,6 @@ def show_live_dashboard():
     with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0), unsafe_allow_html=True)
     with mi4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est), unsafe_allow_html=True)
 
-    # 6. 宗师级图表
     st.markdown("### ☁️ 宗师级推演 (P90-P50-P10)")
     
     vol = factors['vol_base']
@@ -301,7 +294,6 @@ def show_live_dashboard():
         })
     df_chart = pd.DataFrame(chart_data)
     
-    # 绘图
     base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
     area = base.mark_area(opacity=0.2, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
     l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
@@ -316,9 +308,32 @@ def show_live_dashboard():
     )
     
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v8.8 Fragment (No-Jitter) | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v8.9 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+
+    # --- 新增：参数说明书 (放在折叠栏里) ---
+    with st.expander("📖 参数详解手册 (看不懂点这里)"):
+        st.markdown("""
+        #### 🌍 宏观环境 (看天吃饭)
+        * **QQQ (纳指)**: 科技股大盘风向标。如果 QQQ 大跌，BTDR 很难独善其身。        * **VIX (恐慌)**: 市场的恐惧指数。**数值越高越危险**。
+            * VIX > 20: 市场紧张。
+            * VIX > 30: 极度恐慌 (崩盘风险)。
+        * **Beta (联动)**: BTDR 跟随大哥的程度。
+            * Beta(BTC) = 1.5: BTC 涨 1%，BTDR 往往能涨 1.5%。
+        
+        #### 🔬 微观结构 (自身体质)
+        * **VWAP (机构成本)**: 过去30天主力资金的平均成本线。
+            * 价格 > VWAP: 强势 (但太高会有回调压力)。
+            * 价格 < VWAP: 弱势 (但也可能是抄底机会)。
+        * **ADX (趋势强度)**: 判断现在是“单边行情”还是“垃圾时间”。
+            * ADX > 25 (Trend): 趋势明显，适合顺势操作。
+            * ADX < 20 (Chop): 震荡市，适合高抛低吸。
+        * **RSI (强弱指标)**: 是否涨过头了？
+            * RSI > 70: 超买 (警惕回调)。
+            * RSI < 30: 超卖 (可能反弹)。
+        * **Implied Vol (波动率)**: 预期的震荡幅度。数值越大，预测的喇叭口张得越开。
+        * **Exp. Drift (预期漂移)**: 模型综合所有因子后，算出来的**当日预期涨跌惯性**。
+        """)
 
 # --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v8.8")
-# 这里调用 fragment 函数，页面主体结构（标题）不会被重刷，只有下面这个函数内部会动
+st.markdown("### ⚡ BTDR 领航员 v8.9")
 show_live_dashboard()
