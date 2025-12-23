@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v9.6", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.7", layout="centered")
 
-# CSS: 样式定义 (Overnight 呼吸灯 + 布局优化)
+# CSS: 样式定义 (保留所有动效)
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -167,14 +167,14 @@ def run_grandmaster_analytics():
         print(f"Model Error: {e}")
         return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据 (v9.6 Fix: 双轨抓取 + key修正) ---
+# --- 4. 实时数据 (v9.7 Fix: BTDR 独立暴力抓取) ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     symbols = tickers_list.split()
     
     for attempt in range(3):
         try:
-            # A. 基础K线 (用于计算指标)
+            # 1. 基础 K 线 (用于非 BTDR 的股票和历史计算)
             daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
             
             quotes = {}
@@ -182,9 +182,8 @@ def get_realtime_data():
             now_ny = datetime.now(tz_ny)
             today_date = now_ny.date()
             
-            # B. 状态判定 (修正版)
+            # 2. 状态判定
             current_minutes = now_ny.hour * 60 + now_ny.minute
-            
             state = "Overnight"
             if now_ny.weekday() == 5: state = "Weekend"
             elif now_ny.weekday() == 6 and now_ny.hour < 20: state = "Weekend"
@@ -213,36 +212,44 @@ def get_realtime_data():
                             prev_close = df_day['Close'].iloc[-1]
                             open_price = prev_close 
                     
-                    # --- C. 强力抓取现价 (Fix) ---
+                    # --- C. BTDR 专属夜盘通道 (重点) ---
                     current_price = 0.0
                     
-                    # 1. 尝试 fast_info['lastPrice'] (CamelCase 是关键)
-                    try:
-                        ticker_obj = yf.Ticker(sym)
-                        # 注意：不同版本 yfinance key 可能不同，这里做多重尝试
-                        fast_info = ticker_obj.fast_info
-                        if hasattr(fast_info, 'last_price'): val = fast_info.last_price
-                        elif 'lastPrice' in fast_info: val = fast_info['lastPrice']
-                        elif 'regularMarketPrice' in fast_info: val = fast_info['regularMarketPrice']
-                        else: val = None
-                        
-                        if val is not None and str(val) != 'nan':
-                            current_price = float(val)
-                    except: pass
+                    if sym == "BTDR":
+                        # 对 BTDR 使用 info 接口全量抓取 (慢但全)
+                        try:
+                            t = yf.Ticker("BTDR")
+                            info = t.info # 强制刷新
+                            
+                            # 1. 优先找 currentPrice
+                            if 'currentPrice' in info: current_price = info['currentPrice']
+                            
+                            # 2. 如果 currentPrice 似乎是昨天收盘价 (没变)，检查 Ask/Bid
+                            # 在夜盘，Ask/Bid 往往在变动，即使 LastPrice 卡住
+                            if current_price > 0 and 'bid' in info and 'ask' in info:
+                                bid = info.get('bid', 0)
+                                ask = info.get('ask', 0)
+                                if bid > 0 and ask > 0:
+                                    # 如果 Ask/Bid 均值与 currentPrice 偏差大，说明 currentPrice 卡了
+                                    mid = (bid + ask) / 2
+                                    if abs(mid - current_price) / current_price > 0.01: 
+                                        current_price = mid # 使用中间价作为夜盘参考
+                        except:
+                            pass
                     
-                    # 2. 如果失败，尝试 info['currentPrice'] (网络请求更重，但包含夜盘)
+                    # --- D. 其他股票或 BTDR 失败时的通用通道 ---
                     if current_price == 0:
                         try:
-                            info = ticker_obj.info
-                            if 'currentPrice' in info: current_price = info['currentPrice']
-                            elif 'regularMarketPrice' in info: current_price = info['regularMarketPrice']
+                            # 尝试 fast_info
+                            fast = yf.Ticker(sym).fast_info
+                            if hasattr(fast, 'last_price') and fast.last_price: current_price = fast.last_price
+                            elif 'lastPrice' in fast and fast['lastPrice']: current_price = fast['lastPrice']
                         except: pass
-                        
-                    # 3. 实在不行，回退到 K 线
+
+                    # --- E. 兜底 ---
                     if current_price == 0 and not df_day.empty:
                         current_price = df_day['Close'].iloc[-1]
 
-                    # 容错
                     if current_price == 0 and prev_close > 0: current_price = prev_close
 
                     pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
@@ -276,7 +283,7 @@ def show_live_dashboard():
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
     if not quotes:
-        st.warning("📡 夜盘数据连接中 (Connecting to Blue Ocean)...")
+        st.warning("📡 正在从交易所获取最新夜盘数据...")
         return
 
     btc_chg = quotes['BTC-USD']['pct']
@@ -290,7 +297,7 @@ def show_live_dashboard():
     
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.6 Final Fix</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.7 Deep Scrape</div>", unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
@@ -352,7 +359,6 @@ def show_live_dashboard():
     h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
     
-    # [SyntaxError Fix]: 使用多行字符串，避免单行过长导致解析错误
     with col_h: 
         st.markdown(f"""
         <div class="pred-container-wrapper">
@@ -443,8 +449,8 @@ def show_live_dashboard():
     )
     
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v9.6 Final Fix | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v9.7 Deep Scrape | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v9.6 Final Fix")
+st.markdown("### ⚡ BTDR 领航员 v9.7 Deep Scrape")
 show_live_dashboard()
