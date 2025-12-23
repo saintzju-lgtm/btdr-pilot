@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.3", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.4", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 强力防抖 + 样式找回
+# CSS: 强力防抖 + 样式优化
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -27,15 +27,16 @@ st.markdown("""
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 强力锁定图表高度，防止塌陷抖动 */
+    /* 【核心修复】强力锁定图表容器，根治抖动 */
     div[data-testid="stAltairChart"] {
-        height: 300px !important;
-        min-height: 300px !important;
-        overflow: hidden;
+        height: 320px !important;
+        min-height: 320px !important;
+        overflow: hidden !important;
+        border: 1px solid #f8f9fa; /* 占位边框，防止视觉塌陷 */
     }
-    /* 隐藏 Altair 加载时的闪烁 */
-    canvas { transition: opacity 0.3s ease-in-out; }
+    canvas { transition: opacity 0.2s ease-in-out; }
     
+    /* 指标卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
@@ -45,6 +46,7 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
+    /* 因子小卡片 */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
@@ -58,7 +60,7 @@ st.markdown("""
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; }
     .dot-reg { background-color: #0ca678; } .dot-closed { background-color: #adb5bd; }
     
-    /* 日内预测框 (找回) */
+    /* 日内预测框 */
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
     
@@ -89,7 +91,7 @@ def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v8.3")
+st.markdown("### ⚡ BTDR 领航员 v8.4")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -108,7 +110,7 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-# 【找回】日内预测标签
+# 日内预测标签
 st.markdown("### 🎯 日内阻力/支撑 (Intraday)")
 col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
@@ -137,14 +139,13 @@ def run_grandmaster_analytics():
     default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # 下载 6个月数据 (解决 ADX nan 问题)
+        # 下载 6个月数据
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
         
         btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
         
-        # 因子计算
         ret_btdr = btdr['Close'].pct_change()
         ret_btc = btc['Close'].pct_change()
         ret_qqq = qqq['Close'].pct_change()
@@ -161,7 +162,7 @@ def run_grandmaster_analytics():
         btdr['PV'] = btdr['TP'] * btdr['Volume']
         vwap_30d = btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum()
         
-        # ADX (需要更多历史数据)
+        # ADX Calculation
         high = btdr['High']; low = btdr['Low']; close = btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
@@ -169,13 +170,12 @@ def run_grandmaster_analytics():
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
         
-        # 处理除零
         plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr.replace(0, np.nan))
         minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr.replace(0, np.nan))
         
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         adx = dx.rolling(14).mean().iloc[-1]
-        if np.isnan(adx): adx = 20 # 兜底
+        if np.isnan(adx): adx = 20
         regime = "Trend" if adx > 25 else "Chop"
         
         delta = btdr['Close'].diff()
@@ -233,7 +233,6 @@ def render_ui(data):
             val = quotes[p]['pct']
             ph_peers[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
             
-    # BTDR 本体
     state_map = {"PRE": "dot-reg", "REG": "dot-reg", "POST": "dot-reg", "CLOSED": "dot-closed"}
     dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
     status_tag = f"<span class='status-dot {dot_class}'></span>"
@@ -242,7 +241,7 @@ def render_ui(data):
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100
     ph_btdr_open.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}% Prem.", dist_vwap), unsafe_allow_html=True)
 
-    # --- 日内预测 (Intraday) [找回] ---
+    # --- 日内预测 (Intraday) ---
     if btdr['price'] > 0:
         btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
         peers_avg = sum(quotes[p]['pct'] for p in peers if p in quotes) / 5
@@ -302,7 +301,7 @@ def render_ui(data):
         p50 = np.percentile(paths, 50, axis=0)
         p10 = np.percentile(paths, 10, axis=0)
         
-        # 宽表数据
+        # 【关键】宽表数据
         chart_data = []
         for d in range(days_ahead + 1):
             chart_data.append({
@@ -313,35 +312,37 @@ def render_ui(data):
             })
         df_chart = pd.DataFrame(chart_data)
         
-        # 绘图逻辑优化：解决Tooltip和线丢失问题
+        # 【关键】绘图逻辑：区域 + 线条 + 多值Tooltip
         base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
         
-        # 区域 (P10-P90)
+        # 1. 区域 (Range P10-P90)
         area = base.mark_area(opacity=0.2, color='#4dabf7').encode(
             y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)),
             y2='P90'
         )
         
-        # 三条线
+        # 2. 三条线
         line_p90 = base.mark_line(color='#0ca678', strokeDash=[5,5], size=2).encode(y='P90') # 绿色虚线
         line_p50 = base.mark_line(color='#228be6', size=3).encode(y='P50') # 蓝色实线
         line_p10 = base.mark_line(color='#d6336c', strokeDash=[5,5], size=2).encode(y='P10') # 红色虚线
         
-        # 隐形点 (Tooltip 触发器)
-        points = base.mark_circle(size=60, opacity=0).encode(
+        # 3. 隐形点 (触发 Tooltip，格式化为2位小数)
+        points = base.mark_circle(size=100, opacity=0).encode(
             y='P50',
             tooltip=[
                 alt.Tooltip('Day', title='T+'),
-                alt.Tooltip('P90', title='P90 (High)', format='$.2f'),
-                alt.Tooltip('P50', title='P50 (Median)', format='$.2f'),
-                alt.Tooltip('P10', title='P10 (Low)', format='$.2f')
+                alt.Tooltip('P90', title='P90 (High)', format='.2f'),
+                alt.Tooltip('P50', title='P50 (Median)', format='.2f'),
+                alt.Tooltip('P10', title='P10 (Low)', format='.2f')
             ]
         )
         
-        chart = (area + line_p90 + line_p50 + line_p10 + points).properties(height=280).interactive()
+        # 组合图表
+        chart = (area + line_p90 + line_p50 + line_p10 + points).interactive()
+        
         ph_chart.altair_chart(chart, use_container_width=True)
 
-    ph_footer.caption(f"Engine: v8.3 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    ph_footer.caption(f"Engine: v8.4 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
