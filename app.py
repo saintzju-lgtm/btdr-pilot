@@ -141,7 +141,6 @@ def run_grandmaster_analytics():
     default_model = {
         "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
         "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
-        # v9.9 新增：集成模型的静态部分
         "ensemble_hist_h": 0.05, "ensemble_hist_l": -0.05,
         "ensemble_mom_h": 0.08, "ensemble_mom_l": -0.08
     }
@@ -178,11 +177,11 @@ def run_grandmaster_analytics():
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
         
-        # ADX Logic (简写以保持整洁，逻辑同前)
+        # ADX Logic
         up, down = high.diff(), -low.diff()
         plus_dm = np.where((up > down) & (up > 0), up, 0)
         minus_dm = np.where((down > up) & (down > 0), down, 0)
-        atr_s = pd.Series(atr.values, index=btdr.index) # 确保对齐
+        atr_s = pd.Series(atr.values, index=btdr.index)
         plus_di = 100 * (pd.Series(plus_dm, index=btdr.index).rolling(14).mean() / atr_s)
         minus_di = 100 * (pd.Series(minus_dm, index=btdr.index).rolling(14).mean() / atr_s)
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
@@ -195,7 +194,7 @@ def run_grandmaster_analytics():
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs)).iloc[-1]
         
-        vol_base = ret_btdr.std() # 简化取最近30天std作为基础
+        vol_base = ret_btdr.std()
         if len(ret_btdr) > 20:
             vol_base = pd.Series(ret_btdr).ewm(span=20).std().iloc[-1]
         atr_ratio = (atr / close).iloc[-1]
@@ -228,20 +227,15 @@ def run_grandmaster_analytics():
         theta_h = np.linalg.lstsq(XtWX, X.T @ W @ Y_h, rcond=None)[0]
         theta_l = np.linalg.lstsq(XtWX, X.T @ W @ Y_l, rcond=None)[0]
 
-        # --- v9.9 集成部分：计算辅助模型 ---
-        # Model 2: Historical Mean (10天均值 - 稳健)
+        # --- v9.9 集成部分 ---
         hist_h_mean = df_reg['Target_High'].tail(10).mean()
         hist_l_mean = df_reg['Target_Low'].tail(10).mean()
-        
-        # Model 3: Momentum / Max Vol (3天极值 - 激进)
-        # 用最近3天的最大涨幅和最小跌幅来代表近期资金的活跃度
         mom_h_val = df_reg['Target_High'].tail(3).max()
         mom_l_val = df_reg['Target_Low'].tail(3).min()
 
         final_model = {
             "high": {"intercept": theta_h[0], "beta_gap": theta_h[1], "beta_btc": theta_h[2], "beta_vol": theta_h[3]},
             "low": {"intercept": theta_l[0], "beta_gap": theta_l[1], "beta_btc": theta_l[2], "beta_vol": theta_l[3]},
-            # 存储辅助模型的参数供前端混合
             "ensemble_hist_h": hist_h_mean,
             "ensemble_hist_l": hist_l_mean,
             "ensemble_mom_h": mom_h_val,
@@ -308,7 +302,7 @@ def get_realtime_data():
         return quotes, fng
     except: return None, 50
 
-# --- 5. 仪表盘展示 (v9.9 Ensemble Logic) ---
+# --- 5. 仪表盘展示 (修复了 NameError) ---
 @st.fragment(run_every=10)
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
@@ -359,33 +353,35 @@ def show_live_dashboard():
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- 👑 v9.9 集成预测核心 (Ensemble Core) ---
+    # --- 关键修复：提前计算 drift_est ---
+    drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
+    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
+
+    # --- 👑 v9.9 集成预测核心 ---
     btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) 
     btc_pct_factor = btc['pct'] / 100 
     vol_state_factor = factors['atr_ratio'] 
 
     mh, ml = ai_model['high'], ai_model['low']
     
-    # 1. Kalman WLS 预测 (数学派 - 50%)
+    # 1. Kalman WLS
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * btdr_open_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * btdr_open_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # 2. Historical Mean (稳健派 - 30%)
+    # 2. Historical Mean
     pred_h_hist = ai_model['ensemble_hist_h']
     pred_l_hist = ai_model['ensemble_hist_l']
     
-    # 3. Momentum (激进派 - 20%)
+    # 3. Momentum
     pred_h_mom = ai_model['ensemble_mom_h']
     pred_l_mom = ai_model['ensemble_mom_l']
     
-    # --- 最终加权投票 ---
-    # 权重配置
+    # 加权投票
     w_k, w_h, w_m = 0.5, 0.3, 0.2
     
     final_h_ret = (w_k * pred_h_kalman) + (w_h * pred_h_hist) + (w_m * pred_h_mom)
     final_l_ret = (w_k * pred_l_kalman) + (w_h * pred_l_hist) + (w_m * pred_l_mom)
     
-    # 情绪微调
     sentiment_adj = (fng_val - 50) * 0.0005
     final_h_ret += sentiment_adj
     final_l_ret += sentiment_adj
@@ -394,7 +390,6 @@ def show_live_dashboard():
     p_low = btdr['prev'] * (1 + final_l_ret)
     
     st.markdown("### 🎯 集成预测 (Ensemble Prediction)")
-    # 可视化权重条
     st.markdown("""
     <div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;">
         <span>🟦 Kalman (50%)</span><span>🟨 History (30%)</span><span>🟥 Momentum (20%)</span>
@@ -412,13 +407,13 @@ def show_live_dashboard():
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # --- 因子 & 推演 (保持 v9.8 的优秀设计) ---
+    # --- 因子 & 推演 ---
     st.markdown("---")
     st.markdown("### 🌍 宏观 & 微观 (Macro/Micro)")
     m1, m2, m3, m4 = st.columns(4)
     with m1: st.markdown(factor_html("VIX", f"{vix['price']:.1f}", "Risk", 0, "恐慌指数", reverse_color=True), unsafe_allow_html=True)
-    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
-    with m3: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "Mom", 0, "相对强弱指标"), unsafe_allow_html=True)
+    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
+    with m3: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "Mom", 0, "相对强弱"), unsafe_allow_html=True)
     with m4: st.markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est, "当日预期动能"), unsafe_allow_html=True)
     
     st.markdown("### ☁️ 概率推演 (Student-t + Mean Reversion)")
