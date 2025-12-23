@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v9.1", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.2 Stable", layout="centered")
 
 # CSS: 强力防抖 + 悬停提示 (Tooltips)
 st.markdown("""
@@ -42,64 +42,35 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* --- 核心修改：带悬停提示的因子卡片 --- */
+    /* 因子卡片 & Tooltips */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-        position: relative; /* 为绝对定位的 tooltip 做参照 */
-        cursor: help; /* 鼠标变成问号，提示可悬停 */
-        transition: transform 0.1s;
+        position: relative; cursor: help; transition: transform 0.1s;
     }
     
-    .factor-box:hover {
-        border-color: #ced4da;
-        transform: translateY(-1px);
-    }
-
+    .factor-box:hover { border-color: #ced4da; transform: translateY(-1px); }
     .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    /* Tooltip 文本样式 */
     .tooltip-text {
-        visibility: hidden;
-        width: 180px;
-        background-color: rgba(33, 37, 41, 0.95);
-        color: #fff !important;
-        text-align: center;
-        border-radius: 6px;
-        padding: 8px;
-        position: absolute;
-        z-index: 999;
-        bottom: 110%; /* 显示在卡片上方 */
-        left: 50%;
-        margin-left: -90px; /* 居中 */
-        opacity: 0;
-        transition: opacity 0.3s;
-        font-size: 0.7rem !important;
-        font-weight: normal;
-        line-height: 1.4;
-        pointer-events: none;
+        visibility: hidden; width: 180px; background-color: rgba(33, 37, 41, 0.95);
+        color: #fff !important; text-align: center; border-radius: 6px; padding: 8px;
+        position: absolute; z-index: 999; bottom: 110%; left: 50%; margin-left: -90px;
+        opacity: 0; transition: opacity 0.3s; font-size: 0.7rem !important;
+        font-weight: normal; line-height: 1.4; pointer-events: none;
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
     .tooltip-text::after {
-        content: "";
-        position: absolute;
-        top: 100%;
-        left: 50%;
-        margin-left: -5px;
-        border-width: 5px;
-        border-style: solid;
+        content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px;
+        border-width: 5px; border-style: solid;
         border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
 
-    /* 悬停触发 */
-    .factor-box:hover .tooltip-text {
-        visibility: visible;
-        opacity: 1;
-    }
+    .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     
     /* 颜色定义 */
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
@@ -123,7 +94,6 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
         delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     return f"""<div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
-# 【关键修改】增加 tooltip_text 参数
 def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
     color_class = "color-up" if delta_val >= 0 else "color-down"
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
@@ -136,14 +106,18 @@ def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=Fa
     </div>
     """
 
-# --- 3. 核心计算逻辑 (v8.8 Stable) ---
+# --- 3. 核心计算逻辑 (Fix: Disable Threads) ---
 @st.cache_data(ttl=300) 
 def run_grandmaster_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
     default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
+        # 核心修改：threads=False
+        data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
+        
+        if data.empty: return default_model, default_factors, "No Data"
+
         btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
@@ -199,47 +173,70 @@ def run_grandmaster_analytics():
             "beta_sector": 0.25
         }
         return final_model, factors, "Grandmaster"
-    except: return default_model, default_factors, "Offline"
+    except Exception as e:
+        print(f"Model Error: {e}")
+        return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据 ---
+# --- 4. 实时数据 (Fix: Retry + No Threads) ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
-    try:
-        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
-        live = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
-        quotes = {}
-        symbols = tickers_list.split()
-        today_ny = datetime.now(pytz.timezone('America/New_York')).date()
-        for sym in symbols:
-            try:
-                df_day = daily[sym] if sym in daily else pd.DataFrame()
-                if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
-                df_min = live[sym] if sym in live else pd.DataFrame()
-                if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
-                
-                state = "REG" if not df_min.empty else "CLOSED"
-                current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
-                prev_close = df_day['Close'].iloc[-2] if len(df_day) >= 2 else (df_day['Close'].iloc[-1] if not df_day.empty else 1.0)
-                
-                pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                open_price = df_day['Open'].iloc[-1] if not df_day.empty else current_price
-                quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "tag": state}
-            except: quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR"}
-        
-        try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
-        except: fng = 50
-        
-        return quotes, fng
-    except: return None, 50
+    
+    # 增加重试逻辑，防止网络瞬断
+    for attempt in range(3):
+        try:
+            # 核心修改：threads=False
+            daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
+            live = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
+            
+            if daily.empty: raise ValueError("Empty Data")
+            
+            quotes = {}
+            symbols = tickers_list.split()
+            today_ny = datetime.now(pytz.timezone('America/New_York')).date()
+            for sym in symbols:
+                try:
+                    df_day = daily[sym] if sym in daily else pd.DataFrame()
+                    if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
+                    df_min = live[sym] if sym in live else pd.DataFrame()
+                    if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
+                    
+                    state = "REG" if not df_min.empty else "CLOSED"
+                    current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
+                    
+                    # 昨收处理：如果今天还没开盘，拿昨天的Close；如果开了，拿昨天的Close
+                    if not df_day.empty:
+                         # 简单的昨收逻辑：取倒数第二个值，如果只有1个值（比如上市第一天）则取当前
+                        if len(df_day) >= 2:
+                            prev_close = df_day['Close'].iloc[-2]
+                        else:
+                            prev_close = df_day['Close'].iloc[-1]
+                    else:
+                        prev_close = 1.0
 
-# --- 5. Fragment 局部刷新 (v8.8 稳态内核) ---
+                    pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                    open_price = df_day['Open'].iloc[-1] if not df_day.empty else current_price
+                    quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "tag": state}
+                except: quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR"}
+            
+            try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
+            except: fng = 50
+            
+            return quotes, fng
+            
+        except Exception:
+            time.sleep(0.5) # 失败重试间隔
+            continue
+            
+    return None, 50
+
+# --- 5. Fragment 局部刷新 (v9.2 稳态内核) ---
 @st.fragment(run_every=5) 
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
     if not quotes:
-        st.warning("📡 正在连接交易所数据流...")
+        st.warning("📡 连接中 (Retrying)...")
         return
 
     btc_chg = quotes['BTC-USD']['pct']
@@ -253,7 +250,7 @@ def show_live_dashboard():
     
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.1 (Hover-Help)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.2 Stable</div>", unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
@@ -367,8 +364,8 @@ def show_live_dashboard():
     )
     
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v9.1 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v9.2 Stable | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v9.1")
+st.markdown("### ⚡ BTDR 领航员 v9.2 Stable")
 show_live_dashboard()
