@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v7.5", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v7.6", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 保持 v7.4 的完美 UI
+# CSS: 保持 UI 统一
 st.markdown("""
     <style>
     /* 基础重置 */
@@ -70,7 +70,18 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 辅助函数 ---
+# --- 2. 状态管理与热修复 (关键修改) ---
+if 'data_cache' not in st.session_state:
+    st.session_state['data_cache'] = None
+
+# 【自愈修复】检查缓存是否包含新版本所需的字段
+if st.session_state['data_cache'] is not None:
+    # 如果缓存里没有 'trend' 这个新字段，说明是旧缓存，必须清除
+    if 'trend' not in st.session_state['data_cache']:
+        st.session_state['data_cache'] = None
+        st.rerun() # 立即重启，重新下载数据
+
+# --- 3. 辅助函数 ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     delta_html = ""
     if delta_str:
@@ -84,10 +95,7 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     </div>
     """
 
-# --- 3. 状态管理 ---
-if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
-
-st.markdown("### ⚡ BTDR 领航员 v7.5")
+st.markdown("### ⚡ BTDR 领航员 v7.6")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -114,7 +122,7 @@ col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
 with col_l: ph_pred_low = st.empty()
 
-# 【新增】趋势推演
+# 趋势推演
 st.markdown("### 📈 未来5日趋势推演 (Trend)")
 ph_chart = st.empty() # 图表占位符
 col_t1, col_t2 = st.columns(2)
@@ -133,7 +141,7 @@ def auto_tune_and_trend():
         "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
         "beta_sector": 0.25
     }
-    trend_factors = {"volatility": 0.05, "drift": 0.0} # 默认波动率5%
+    trend_factors = {"volatility": 0.05, "drift": 0.0}
 
     try:
         # 获取30天数据
@@ -154,17 +162,14 @@ def auto_tune_and_trend():
         cov_h = np.cov(x, y_high); beta_h = cov_h[0, 1] / cov_h[0, 0] if cov_h[0, 0] != 0 else 0.67
         cov_l = np.cov(x, y_low); beta_l = cov_l[0, 1] / cov_l[0, 0] if cov_l[0, 0] != 0 else 0.88
         
-        # 2. 计算趋势因子 (波动率 & 动量)
-        # 日收益率
+        # 2. 计算趋势因子
         returns = df['Close'].pct_change().dropna()
-        # 历史波动率 (每日标准差)
         volatility = returns.std()
-        # 简单动量 (过去10天平均收益)
         drift = returns.tail(10).mean()
         
         trend_factors = {
-            "volatility": volatility, # 每日波动幅度
-            "drift": drift            # 每日趋势倾向
+            "volatility": volatility, 
+            "drift": drift
         }
 
         final_model = {
@@ -179,6 +184,9 @@ def auto_tune_and_trend():
 # --- 6. 渲染函数 ---
 def render_ui(data):
     if not data: return
+    # 二次检查，防止空数据报错
+    if 'trend' not in data: return
+
     quotes = data['quotes']
     fng_val = data['fng']
     model_params = data['model']
@@ -247,29 +255,22 @@ def render_ui(data):
         <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_low_pct:+.2f}%</div>
     </div></div>""", unsafe_allow_html=True)
 
-    # --- 渲染趋势图 (New) ---
+    # --- 渲染趋势图 ---
     if btdr['price'] > 0:
         vol = trend_factors.get('volatility', 0.05)
-        # 强制放大一点波动率，为了更明显的视觉提示 (Risk Premium)
         vol = max(vol, 0.04)
-        
         current = btdr['price']
         days = 5
         
-        # 生成未来5天的数据点
         future_data = []
-        # Day 0 是现在
         future_data.append({"Day": 0, "Price": current, "Type": "Base"})
         future_data.append({"Day": 0, "Price": current, "Type": "Bull"})
         future_data.append({"Day": 0, "Price": current, "Type": "Bear"})
         
         for d in range(1, days + 1):
-            # Bull: 每天涨 1倍标准差
             bull_p = current * (1 + vol * d)
-            # Bear: 每天跌 1倍标准差
             bear_p = current * (1 - vol * d)
-            # Base: 保持现状 (或微弱动量)
-            base_p = current # 简化为横盘，避免误导
+            base_p = current
             
             future_data.append({"Day": d, "Price": base_p, "Type": "Base"})
             future_data.append({"Day": d, "Price": bull_p, "Type": "Bull"})
@@ -277,7 +278,6 @@ def render_ui(data):
             
         df_chart = pd.DataFrame(future_data)
         
-        # 绘图
         chart = alt.Chart(df_chart).mark_line(point=True).encode(
             x=alt.X('Day:O', title='未来交易日'),
             y=alt.Y('Price', title='价格预演', scale=alt.Scale(zero=False)),
@@ -287,7 +287,6 @@ def render_ui(data):
         
         ph_chart.altair_chart(chart, use_container_width=True)
         
-        # 渲染下方的价格目标卡片
         target_bull = current * (1 + vol * 5)
         target_bear = current * (1 - vol * 5)
         bull_pct = vol * 5 * 100
@@ -335,8 +334,11 @@ def get_data_v75():
     except: return None
 
 # --- 8. 执行流 ---
-if st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
-else: ph_time.info("📡 正在计算趋势模型...")
+# 安全渲染：只有当缓存存在且格式正确时才渲染，否则跳过
+if st.session_state['data_cache'] and 'trend' in st.session_state['data_cache']: 
+    render_ui(st.session_state['data_cache'])
+else: 
+    ph_time.info("📡 正在升级趋势引擎...")
 
 new_quotes = get_data_v75()
 ai_model, ai_trend, ai_status = auto_tune_and_trend()
