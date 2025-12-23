@@ -296,7 +296,7 @@ def get_realtime_data():
         return quotes, fng
     except: return None, 50
 
-# --- 5. 仪表盘展示 (Fixed & Optimized) ---
+# --- 5. 仪表盘展示 (修复版) ---
 @st.fragment(run_every=10)
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
@@ -314,14 +314,12 @@ def show_live_dashboard():
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0})
     btdr = quotes.get('BTDR', {'price': 0})
 
-    # 2. 【关键修复】提前计算所有衍生变量，防止 NameError
+    # 2. 【关键修复】提前计算衍生变量，解决 NameError
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
-    
     drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
-    # Mean Reversion Adjustment
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     
-    # 3. 顶部状态栏
+    # 3. 顶部状态
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     regime_tag = factors['regime']
@@ -356,26 +354,33 @@ def show_live_dashboard():
 
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # 7. 集成预测计算 (Ensemble Logic)
-    btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) 
+    # 7. 集成预测计算 (修复了盘前Gap静态问题)
+    # 【动态Gap逻辑】：盘前优先用现价计算 Gap，盘中则无所谓(Price就是Open后演变的)
+    current_gap_pct = 0.0
+    if btdr['price'] > 0:
+        current_gap_pct = ((btdr['price'] - btdr['prev']) / btdr['prev'])
+    else:
+        current_gap_pct = ((btdr['open'] - btdr['prev']) / btdr['prev'])
+    
+    btdr_open_pct = current_gap_pct
     btc_pct_factor = btc['pct'] / 100 
     vol_state_factor = factors['atr_ratio'] 
 
     mh, ml = ai_model['high'], ai_model['low']
     
-    # Model 1: Kalman
+    # Kalman Model (Dynamic)
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * btdr_open_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * btdr_open_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # Model 2: Hist
+    # Hist Model
     pred_h_hist = ai_model['ensemble_hist_h']
     pred_l_hist = ai_model['ensemble_hist_l']
     
-    # Model 3: Mom
+    # Mom Model
     pred_h_mom = ai_model['ensemble_mom_h']
     pred_l_mom = ai_model['ensemble_mom_l']
     
-    # Voting Weights
+    # Weighted Vote
     w_k, w_h, w_m = 0.5, 0.3, 0.2
     final_h_ret = (w_k * pred_h_kalman) + (w_h * pred_h_hist) + (w_m * pred_h_mom)
     final_l_ret = (w_k * pred_l_kalman) + (w_h * pred_l_hist) + (w_m * pred_l_mom)
@@ -405,18 +410,16 @@ def show_live_dashboard():
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
-    # 8. 因子面板 (Split View & Safe Rendering)
+    # 8. 因子面板 (Split View)
     st.markdown("---")
     
-    # Macro Panel
     st.markdown("### 🌍 宏观环境 (Macro)")
     ma1, ma2, ma3, ma4 = st.columns(4)
     with ma1: st.markdown(factor_html("QQQ (纳指)", f"{qqq['pct']:+.2f}%", "Market", qqq['pct'], "科技股大盘风向标。"), unsafe_allow_html=True)
     with ma2: st.markdown(factor_html("VIX (恐慌)", f"{vix['price']:.1f}", "Risk", 0, "市场恐慌指数，>25需警惕。", reverse_color=True), unsafe_allow_html=True)
-    with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
-    with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta (卡尔曼滤波优化)"), unsafe_allow_html=True)
+    with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
+    with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
 
-    # Micro Panel
     st.markdown("### 🔬 微观结构 (Micro)")
     mi1, mi2, mi3, mi4 = st.columns(4)
     rsi_val = factors['rsi']
