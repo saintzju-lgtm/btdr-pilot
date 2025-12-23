@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.1", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.2", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
 
-# CSS: 宗师版 UI
+# CSS: 视觉锁定 + 样式优化
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -27,6 +27,15 @@ st.markdown("""
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
+    /* 强制锁定图表容器高度，彻底根除抖动 */
+    div[data-testid="stAltairChart"] {
+        height: 260px !important;
+        overflow: hidden;
+        transition: none !important;
+    }
+    canvas { animation: none !important; transition: none !important; }
+    
+    /* 指标卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
@@ -54,7 +63,6 @@ st.markdown("""
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
     .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
     
-    /* 状态标签 */
     .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     </style>
@@ -62,7 +70,6 @@ st.markdown("""
 
 # --- 2. 状态管理 ---
 if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
-# 缓存自检：如果缺少 v8.1 的 grandmaster 字段，清空重跑
 if st.session_state['data_cache'] and 'grandmaster' not in st.session_state['data_cache']:
     st.session_state['data_cache'] = None
     st.rerun()
@@ -80,7 +87,7 @@ def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v8.1 (宗师版)")
+st.markdown("### ⚡ BTDR 领航员 v8.2")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -99,7 +106,6 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-# 因子面板 (双层)
 st.markdown("### 🌍 宏观环境 (Macro)")
 macro_cols = st.columns(4)
 ph_macros = [col.empty() for col in macro_cols]
@@ -109,6 +115,7 @@ micro_cols = st.columns(4)
 ph_micros = [col.empty() for col in micro_cols]
 
 st.markdown("### 🎯 宗师级推演 (Grandmaster MC)")
+# 图表占位符 (已通过CSS锁定高度)
 ph_chart = st.empty()
 col_mc1, col_mc2 = st.columns(2)
 with col_mc1: ph_mc_bull = st.empty()
@@ -124,39 +131,28 @@ def run_grandmaster_analytics():
     default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # 1. 全量数据获取 (BTDR, BTC, QQQ, VIX)
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="3mo", interval="1d", group_by='ticker', threads=True, progress=False)
-        
-        btdr = data['BTDR'].dropna()
-        btc = data['BTC-USD'].dropna()
-        qqq = data['QQQ'].dropna()
-        
-        # 对齐
+        btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
         
-        # --- A. 宏观因子计算 (Macro) ---
+        # 因子计算
         ret_btdr = btdr['Close'].pct_change()
         ret_btc = btc['Close'].pct_change()
         ret_qqq = qqq['Close'].pct_change()
         
-        # Beta BTC
         cov_btc = ret_btdr.rolling(60).cov(ret_btc).iloc[-1]
         var_btc = ret_btc.rolling(60).var().iloc[-1]
         beta_btc = cov_btc / var_btc if var_btc != 0 else 1.5
         
-        # Beta QQQ
         cov_qqq = ret_btdr.rolling(60).cov(ret_qqq).iloc[-1]
         var_qqq = ret_qqq.rolling(60).var().iloc[-1]
         beta_qqq = cov_qqq / var_qqq if var_qqq != 0 else 1.2
         
-        # --- B. 微观因子计算 (Micro) ---
-        # 1. VWAP (30d)
         btdr['TP'] = (btdr['High'] + btdr['Low'] + btdr['Close']) / 3
         btdr['PV'] = btdr['TP'] * btdr['Volume']
         vwap_30d = btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum()
         
-        # 2. ADX
         high = btdr['High']; low = btdr['Low']; close = btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
@@ -167,25 +163,16 @@ def run_grandmaster_analytics():
         adx = dx.rolling(14).mean().iloc[-1]
         regime = "Trend" if adx > 25 else "Chop"
         
-        # 3. RSI
         delta = btdr['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + gain/loss)).iloc[-1]
-        
-        # 4. 基础波动率
         vol_base = ret_btdr.ewm(span=20).std().iloc[-1]
 
-        factors = {
-            "beta_btc": beta_btc, "beta_qqq": beta_qqq,
-            "vwap": vwap_30d, "adx": adx, "regime": regime, "rsi": rsi,
-            "vol_base": vol_base
-        }
+        factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, "adx": adx, "regime": regime, "rsi": rsi, "vol_base": vol_base}
         
-        # --- C. 日内模型参数 (Regression) ---
-        df_reg = btdr.tail(30).copy()
-        df_reg['PrevClose'] = df_reg['Close'].shift(1)
-        df_reg = df_reg.dropna()
+        # 回归模型
+        df_reg = btdr.tail(30).copy(); df_reg['PrevClose'] = df_reg['Close'].shift(1); df_reg = df_reg.dropna()
         x = ((df_reg['Open'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
         y_high = ((df_reg['High'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
         y_low = ((df_reg['Low'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
@@ -197,9 +184,7 @@ def run_grandmaster_analytics():
             "low": {"intercept": 0.7*-3.22 + 0.3*(np.mean(y_low)-beta_l*np.mean(x)), "beta_open": 0.7*0.88 + 0.3*np.clip(beta_l,0.4,1.5), "beta_btc": 0.42},
             "beta_sector": 0.25
         }
-        
         return final_model, factors, "Grandmaster"
-        
     except: return default_model, default_factors, "Offline"
 
 # --- 6. 渲染函数 ---
@@ -223,7 +208,6 @@ def render_ui(data):
     
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
-    
     ph_time.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span></div>", unsafe_allow_html=True)
     
     ph_btc.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
@@ -241,51 +225,34 @@ def render_ui(data):
     status_tag = f"<span class='status-dot {dot_class}'></span>"
     ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # VWAP 对比
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100
     ph_btdr_open.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}% Prem.", dist_vwap), unsafe_allow_html=True)
 
-    # --- 渲染因子面板 (Macro & Micro) ---
-    # 1. Macro
+    # 因子面板
     ph_macros[0].markdown(factor_html("QQQ (纳指)", f"{qqq_chg:+.2f}%", "Market", qqq_chg), unsafe_allow_html=True)
     ph_macros[1].markdown(factor_html("VIX (恐慌)", f"{vix_val:.1f}", f"{vix_chg:+.1f}%", -vix_chg, reverse_color=True), unsafe_allow_html=True)
     ph_macros[2].markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Corr", 0), unsafe_allow_html=True)
     ph_macros[3].markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Corr", 0), unsafe_allow_html=True)
     
-    # 2. Micro
     ph_micros[0].markdown(factor_html("ADX (强度)", f"{factors['adx']:.1f}", factors['regime'], 1 if factors['adx']>25 else -1), unsafe_allow_html=True)
     ph_micros[1].markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "O/B" if factors['rsi']>70 else ("O/S" if factors['rsi']<30 else "Neu"), 0), unsafe_allow_html=True)
     ph_micros[2].markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0), unsafe_allow_html=True)
     
-    # 综合漂移计算 (Total Drift)
-    # 漂移 = 0 (Base) + BTC影响 + QQQ影响
     drift_est = (btc_chg/100 * factors['beta_btc'] * 0.4) + (qqq_chg/100 * factors['beta_qqq'] * 0.4)
-    # VWAP 回归引力
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
-    
     ph_micros[3].markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est), unsafe_allow_html=True)
 
     # --- 宗师级蒙特卡洛 (Grandmaster MC) ---
     if btdr['price'] > 0:
         vol = factors['vol_base']
-        
-        # 宗师算法：7因子融合
-        # 1. 基础动量：由 BTC 和 QQQ 当日走势驱动
         drift = drift_est
-        
-        # 2. 恐慌修正 (VIX)
         if vix_val > 25: drift -= 0.005; vol *= 1.3
-        if vix_val > 35: drift -= 0.01; vol *= 1.8 # 崩盘模式
-        
-        # 3. 均值回归修正 (RSI)
         if factors['rsi'] > 75: drift -= 0.003
         if factors['rsi'] < 25: drift += 0.003
-        
-        # 4. 状态修正 (Regime)
         if factors['regime'] == "Chop": drift *= 0.5; vol *= 0.8
         
-        # 运行模拟
-        simulations = 500; days_ahead = 5; paths = []
+        simulations = 500; days_ahead = 5
+        paths = []
         current = btdr['price']
         
         for i in range(simulations):
@@ -302,28 +269,59 @@ def render_ui(data):
         p50 = np.percentile(paths, 50, axis=0)
         p10 = np.percentile(paths, 10, axis=0)
         
-        chart_df = []
+        # 【关键修正】构造宽表 (Wide Format) 数据，解决Tooltip只显示一条线的问题
+        chart_data = []
         for d in range(days_ahead + 1):
-            chart_df.append({"Day": d, "Price": p50[d], "Type": "P50 (中枢)"})
-            chart_df.append({"Day": d, "Price": p90[d], "Type": "P90 (压力)"})
-            chart_df.append({"Day": d, "Price": p10[d], "Type": "P10 (支撑)"})
-        df_chart = pd.DataFrame(chart_df)
+            chart_data.append({
+                "Day": d,
+                "P90": p90[d],
+                "P50": p50[d],
+                "P10": p10[d],
+                "P90_Label": f"P90: ${p90[d]:.2f}",
+                "P50_Label": f"P50: ${p50[d]:.2f}",
+                "P10_Label": f"P10: ${p10[d]:.2f}"
+            })
+        df_chart = pd.DataFrame(chart_data)
         
+        # Altair 绘图 (Unified Tooltip Logic)
         base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
-        area = base.mark_area(opacity=0.3, color='#4dabf7').encode(y=alt.Y('Price', scale=alt.Scale(zero=False)), y2='Price_Low').transform_filter(alt.FieldOneOfPredicate(field='Type', oneOf=['P90 (压力)'])).transform_lookup(lookup='Day', from_=alt.LookupData(df_chart[df_chart['Type'] == 'P10 (支撑)'], 'Day', ['Price']), as_=['Price_Low'])
-        lines = base.mark_line().encode(y='Price', color=alt.Color('Type', scale=alt.Scale(domain=['P90 (压力)', 'P50 (中枢)', 'P10 (支撑)'], range=['#0ca678', '#228be6', '#fa5252'])))
-        ph_chart.altair_chart((area + lines).properties(height=240).interactive(), use_container_width=True)
+        
+        # 1. 区域图 (Range P10-P90)
+        area = base.mark_area(opacity=0.3, color='#4dabf7').encode(
+            y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)),
+            y2='P90'
+        )
+        
+        # 2. 中位线 (P50)
+        line = base.mark_line(color='#228be6').encode(y='P50')
+        
+        # 3. 隐形点 (用于触发 Tooltip)
+        # 使用 pivot transform 或者直接在同一行里读取 P90/P50/P10
+        # 这里我们在 base 里已经有了宽表，所以直接用 tooltip 读取所有列
+        nearest = base.mark_circle(size=100, opacity=0).encode(
+            y='P50',
+            tooltip=[
+                alt.Tooltip('Day', title='Day'),
+                alt.Tooltip('P90', title='P90 (High)', format='$.2f'),
+                alt.Tooltip('P50', title='P50 (Median)', format='$.2f'),
+                alt.Tooltip('P10', title='P10 (Low)', format='$.2f')
+            ]
+        )
+        
+        chart = (area + line + nearest).interactive()
+        
+        ph_chart.altair_chart(chart, use_container_width=True)
         
         p90_end = p90[-1]; p90_pct = (p90_end - current)/current * 100
         p10_end = p10[-1]; p10_pct = (p10_end - current)/current * 100
         ph_mc_bull.markdown(card_html("P90 强压位", f"${p90_end:.2f}", f"{p90_pct:+.1f}%", p90_pct), unsafe_allow_html=True)
         ph_mc_bear.markdown(card_html("P10 强撑位", f"${p10_end:.2f}", f"{p10_pct:+.1f}%", p10_pct), unsafe_allow_html=True)
 
-    ph_footer.caption(f"Engine: v8.1 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    ph_footer.caption(f"Engine: v8.2 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
-def get_data_v81():
+def get_data_v82():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     try:
         daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
@@ -358,9 +356,9 @@ def get_data_v81():
 
 # --- 8. 执行流 ---
 if st.session_state['data_cache'] and 'grandmaster' in st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
-else: ph_time.info("📡 正在融合宏观与微观模型...")
+else: ph_time.info("📡 正在融合全维数据...")
 
-new_quotes = get_data_v81()
+new_quotes = get_data_v82()
 ai_model, ai_factors, ai_status = run_grandmaster_analytics()
 
 if new_quotes:
