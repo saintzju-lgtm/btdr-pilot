@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v9.3", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v9.4", layout="centered")
 
-# CSS: 样式定义 (包含防抖、Tooltips、以及不同状态的小圆点颜色)
+# CSS: 样式定义 (新增 Overnight 紫色状态)
 st.markdown("""
     <style>
     html { overflow-y: scroll; }
@@ -75,11 +75,12 @@ st.markdown("""
     /* 颜色定义 */
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
-    /* 状态小圆点 (Pre/Post/Mkt) */
+    /* 状态小圆点 (Pre/Post/Mkt/Night) */
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px; }
     .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; } /* 盘前：橙色 */
     .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; } /* 盘中：绿色 */
     .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; } /* 盘后：蓝色 */
+    .dot-night { background-color: #7048e8; box-shadow: 0 0 4px #7048e8; } /* 夜盘：紫色 */
     .dot-closed { background-color: #adb5bd; } /* 休市：灰色 */
     
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
@@ -111,14 +112,13 @@ def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=Fa
     </div>
     """
 
-# --- 3. 核心计算逻辑 (Threads=False 防锁) ---
+# --- 3. 核心计算逻辑 ---
 @st.cache_data(ttl=300) 
 def run_grandmaster_analytics():
     default_model = {"high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52}, "low": {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42}, "beta_sector": 0.25}
     default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # [关键] threads=False 防止 SQLite 锁定
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
         
         if data.empty: return default_model, default_factors, "No Data"
@@ -182,13 +182,13 @@ def run_grandmaster_analytics():
         print(f"Model Error: {e}")
         return default_model, default_factors, "Offline"
 
-# --- 4. 实时数据 (v9.3 Fix: 强制盘前盘后 + 5d周期) ---
+# --- 4. 实时数据 (v9.4 Fix: 夜盘全时段判定) ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN QQQ ^VIX"
     
     for attempt in range(3):
         try:
-            # [核心修复] 使用 period="5d" 以抓取跨越周末或盘前的最新 tick
+            # period="5d" 确保能抓到上周五盘后或本周一凌晨的数据
             daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=False, progress=False)
             live = yf.download(tickers_list, period="5d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
             
@@ -207,13 +207,13 @@ def get_realtime_data():
                     df_min = live[sym] if sym in live else pd.DataFrame()
                     if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
                     
-                    # 1. 确定现价 (优先取分钟线最后一笔，无论是不是今天)
+                    # 1. 现价 (严格取最后一笔交易数据)
                     if not df_min.empty:
                         current_price = df_min['Close'].iloc[-1]
                     else:
                         current_price = df_day['Close'].iloc[-1] if not df_day.empty else 0
                     
-                    # 2. 确定开盘价 (只有今天的日线存在且日期是今天，才算已开盘)
+                    # 2. 开盘价
                     open_price = 0.0
                     is_open_today = False
                     if not df_day.empty:
@@ -221,10 +221,9 @@ def get_realtime_data():
                             open_price = df_day['Open'].iloc[-1]
                             is_open_today = True
                         else:
-                            # 还没开盘，暂存一个值防止报错，但标记为False
                             open_price = df_day['Close'].iloc[-1] 
 
-                    # 3. 确定昨收
+                    # 3. 昨收
                     prev_close = 1.0
                     if not df_day.empty:
                         if df_day.index[-1].date() == today_date:
@@ -233,19 +232,27 @@ def get_realtime_data():
                         else:
                             prev_close = df_day['Close'].iloc[-1]
 
-                    # 4. 状态判断 (根据纽约时间)
-                    current_hour = now_ny.hour
-                    current_min = now_ny.minute
-                    now_minutes = current_hour * 60 + current_min
+                    # 4. 状态判断 (精细化时间段)
+                    current_minutes = now_ny.hour * 60 + now_ny.minute
                     
-                    if 570 <= now_minutes < 960: # 09:30 - 16:00
-                        state = "Mkt Open"
-                    elif now_minutes < 570: # Before 09:30
-                        state = "Pre-Mkt"
-                    else: # After 16:00
-                        state = "Post-Mkt"
+                    # 默认状态
+                    state = "Overnight" 
                     
-                    if now_ny.weekday() >= 5: state = "Weekend"
+                    # 周末判断 (周六全天 + 周日晚上8点前)
+                    if now_ny.weekday() == 5: # Saturday
+                        state = "Weekend"
+                    elif now_ny.weekday() == 6 and now_ny.hour < 20: # Sunday before 8PM ET
+                        state = "Weekend"
+                    else:
+                        # 交易日逻辑 (包含周日20点后)
+                        if 240 <= current_minutes < 570:   # 04:00 - 09:30
+                            state = "Pre-Mkt"
+                        elif 570 <= current_minutes < 960: # 09:30 - 16:00
+                            state = "Mkt Open"
+                        elif 960 <= current_minutes < 1200:# 16:00 - 20:00
+                            state = "Post-Mkt"
+                        else:                              # 20:00 - 04:00 (夜盘)
+                            state = "Overnight"
 
                     pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     
@@ -270,7 +277,7 @@ def get_realtime_data():
             
     return None, 50
 
-# --- 5. Fragment 局部刷新 (v9.3 UI: 3列布局) ---
+# --- 5. Fragment 局部刷新 ---
 @st.fragment(run_every=5) 
 def show_live_dashboard():
     quotes, fng_val = get_realtime_data()
@@ -291,7 +298,7 @@ def show_live_dashboard():
     
     regime_tag = "Trend" if factors['regime'] == "Trend" else "Chop"
     badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.3 Final</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: v9.4 Night</div>", unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
@@ -308,18 +315,24 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # --- 核心 UI 布局 (3列) ---
     c3, c4, c5 = st.columns(3)
     
-    # 状态点颜色映射
-    state_color_map = {"Pre-Mkt": "dot-pre", "Mkt Open": "dot-reg", "Post-Mkt": "dot-post", "Weekend": "dot-closed", "ERR": "dot-closed"}
+    # 状态点映射 (增加 Overnight)
+    state_color_map = {
+        "Overnight": "dot-night", # 紫色
+        "Pre-Mkt": "dot-pre",     # 橙色
+        "Mkt Open": "dot-reg",    # 绿色
+        "Post-Mkt": "dot-post",   # 蓝色
+        "Weekend": "dot-closed",  # 灰色
+        "ERR": "dot-closed"
+    }
     dot_class = state_color_map.get(btdr.get('tag', 'Weekend'), 'dot-closed')
     status_tag = f"<span class='status-dot {dot_class}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     
-    # 1. 现价 (Realtime)
+    # 1. 现价
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # 2. 开盘价 (Open) - 智能判断显示内容
+    # 2. 开盘价
     open_val_str = f"${btdr['open']:.2f}"
     if not btdr['is_open_today']:
         open_label = "预计开盘/昨收"
@@ -330,11 +343,11 @@ def show_live_dashboard():
         
     with c4: st.markdown(card_html(open_label, open_val_str, None, 0, open_extra), unsafe_allow_html=True)
 
-    # 3. 机构成本 (VWAP)
+    # 3. 机构成本
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- 预测计算 ---
+    # --- 预测 ---
     btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
     peers_avg = sum(quotes[p]['pct'] for p in peers if p in quotes) / 5
     sector_alpha = peers_avg - btc_chg
@@ -423,8 +436,8 @@ def show_live_dashboard():
     )
     
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v9.3 Final | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    st.caption(f"Engine: v9.4 Night | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v9.3 Final")
+st.markdown("### ⚡ BTDR 领航员 v9.4 Night")
 show_live_dashboard()
