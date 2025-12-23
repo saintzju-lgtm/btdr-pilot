@@ -8,8 +8,8 @@ import altair as alt
 from datetime import datetime, time as dt_time
 import pytz
 
-# --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v10.2 Strategist", layout="centered")
+# --- 1. 页面配置 & 样式 (合并了 v10.1 和 v10.2 的所有样式) ---
+st.set_page_config(page_title="BTDR Pilot v10.3 Command", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -101,10 +101,19 @@ CUSTOM_CSS = """
     .bar-hist { background-color: #fab005; width: 30%; }
     .bar-mom { background-color: #fa5252; width: 20%; }
     
-    /* v10.2 Strategy CSS */
+    /* Sniper Signals */
+    .signal-box { border-radius: 8px; padding: 12px; margin-bottom: 15px; text-align: center; font-weight: bold; color: white; display: flex; flex-direction: column; justify-content: center; height: 100%; }
+    .sig-buy { background-color: #0ca678; box-shadow: 0 4px 12px rgba(12, 166, 120, 0.3); border: 1px solid #099268; }
+    .sig-sell { background-color: #e03131; box-shadow: 0 4px 12px rgba(224, 49, 49, 0.3); border: 1px solid #c92a2a; }
+    .sig-wait { background-color: #ced4da; color: #495057; border: 1px solid #adb5bd; }
+    .signal-label { font-size: 0.7rem; opacity: 0.9; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 1px; }
+    .signal-main { font-size: 1.3rem; line-height: 1.2; }
+    .signal-sub { font-size: 0.75rem; font-weight: normal; margin-top: 4px; opacity: 0.9; }
+
+    /* Strategy Cards */
     .strategy-card {
         border-radius: 8px; padding: 12px; margin-bottom: 10px;
-        text-align: left; position: relative;
+        text-align: left; position: relative; height: 100%;
     }
     .strat-long { background-color: #e6fcf5; border: 1px solid #63e6be; color: #087f5b; }
     .strat-short { background-color: #fff5f5; border: 1px solid #ff8787; color: #c92a2a; }
@@ -242,7 +251,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v10.2 Strategist"
+        return final_model, factors, "v10.3 Command"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -360,46 +369,76 @@ def show_live_dashboard():
     sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    # --- 📝 交易策略规划 (Trade Planner) ---
-    st.markdown("### ♟️ 交易计划 (Strategist Plan)")
+    # --- 🚦 组合策略面板 (Signals + Plan) ---
+    st.markdown("### ♟️ 狙击手信号 & 交易计划 (Command Center)")
     
-    # 策略计算
-    # 做多策略：挂单在 Low 上方一点点，止损在 Low 下方 1.5倍波动率
+    curr_p = btdr['price']
+    dist_to_high = ((p_high - curr_p) / curr_p) * 100
+    dist_to_low = ((curr_p - p_low) / curr_p) * 100
+    
+    # 1. Generate Signal Text
+    signal_txt = "WAIT / HOLD"
+    signal_css = "sig-wait"
+    sub_txt = "等待方向确认"
+    
+    if curr_p <= p_low * 1.015:
+        if factors['rsi'] < 35: 
+            signal_txt = "STRONG BUY"; signal_css = "sig-buy"; sub_txt = "超卖区域 + 支撑确认"
+        else: 
+            signal_txt = "BUY ZONE"; signal_css = "sig-buy"; sub_txt = "接近日内支撑"
+    elif curr_p >= p_high * 0.985:
+        if factors['rsi'] > 65: 
+            signal_txt = "STRONG SELL"; signal_css = "sig-sell"; sub_txt = "超买区域 + 阻力确认"
+        else: 
+            signal_txt = "SELL ZONE"; signal_css = "sig-sell"; sub_txt = "接近日内阻力"
+    else:
+        if dist_to_low < 2.0: signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"
+        elif dist_to_high < 2.0: signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"
+
+    # 2. Strategy Levels
     vol_price = btdr['prev'] * factors['vol_base']
     buy_limit = p_low * 1.005 
     buy_stop = p_low - (vol_price * 1.5)
     buy_target = p_high * 0.99
-    buy_rr = (buy_target - buy_limit) / (buy_limit - buy_stop) if (buy_limit - buy_stop) > 0 else 0
     
-    # 做空/止盈策略：挂单在 High 下方一点点
     sell_limit = p_high * 0.995
     sell_stop = p_high + (vol_price * 1.5)
     sell_target = p_low * 1.01
+
+    # 3. Layout: Signal (Left) | Plan (Right)
+    cmd1, cmd2, cmd3 = st.columns([1.2, 1.4, 1.4])
     
-    sp1, sp2 = st.columns(2)
-    with sp1:
+    with cmd1:
         st.markdown(f"""
-        <div class="strategy-card strat-long">
-            <div class="strat-header">🟢 LONG SETUP (做多计划)</div>
-            <div class="strat-row"><span class="strat-label">挂单买入 (Limit Buy)</span><span class="strat-val">${buy_limit:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">第一止盈 (Target)</span><span class="strat-val">${buy_target:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">止损 (Stop Loss)</span><span class="strat-val" style="color:#c92a2a">${buy_stop:.2f}</span></div>
-            <div class="strat-note">预计盈亏比 R/R: 1 : {buy_rr:.2f}</div>
+        <div class="signal-box {signal_css}">
+            <div class="signal-label">CURRENT SIGNAL</div>
+            <div class="signal-main">{signal_txt}</div>
+            <div class="signal-sub">{sub_txt}</div>
         </div>
         """, unsafe_allow_html=True)
         
-    with sp2:
+    with cmd2:
+        st.markdown(f"""
+        <div class="strategy-card strat-long">
+            <div class="strat-header">🟢 做多计划 (LONG)</div>
+            <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${buy_limit:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${buy_target:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${buy_stop:.2f}</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with cmd3:
         st.markdown(f"""
         <div class="strategy-card strat-short">
-            <div class="strat-header">🔴 SHORT/EXIT (卖出计划)</div>
-            <div class="strat-row"><span class="strat-label">挂单卖出 (Limit Sell)</span><span class="strat-val">${sell_limit:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">回补/接回 (Target)</span><span class="strat-val">${sell_target:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">防守止损 (Stop Loss)</span><span class="strat-val" style="color:#c92a2a">${sell_stop:.2f}</span></div>
-            <div class="strat-note">基于 1.5x 日内波动率设定风控</div>
+            <div class="strat-header">🔴 做空/止盈 (SHORT)</div>
+            <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${sell_limit:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${sell_target:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${sell_stop:.2f}</span></div>
         </div>
         """, unsafe_allow_html=True)
 
     # Prediction Visual
+    st.markdown("""<div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;"><span>🟦 Kalman (50%)</span><span>🟨 History (30%)</span><span>🟥 Momentum (20%)</span></div><div class="ensemble-bar"><div class="bar-kalman"></div><div class="bar-hist"></div><div class="bar-mom"></div></div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > p_low else "#ffffff"
@@ -443,7 +482,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.2 Strategist | Signal: Left-Side Setup")
+    st.caption(f"Engine: v10.3 Command | Signal: Multi-Factor")
 
-st.markdown("### ⚡ BTDR 领航员 v10.2 Strategist")
+st.markdown("### ⚡ BTDR 领航员 v10.3 Command")
 show_live_dashboard()
