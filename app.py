@@ -9,7 +9,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v10.1 Sniper", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v10.2 Strategist", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -101,16 +101,19 @@ CUSTOM_CSS = """
     .bar-hist { background-color: #fab005; width: 30%; }
     .bar-mom { background-color: #fa5252; width: 20%; }
     
-    /* Sniper Signal CSS */
-    .signal-box { border-radius: 8px; padding: 10px; margin-bottom: 10px; text-align: center; font-weight: bold; color: white; }
-    .sig-buy { background-color: #0ca678; box-shadow: 0 2px 8px rgba(12, 166, 120, 0.3); }
-    .sig-sell { background-color: #e03131; box-shadow: 0 2px 8px rgba(224, 49, 49, 0.3); }
-    .sig-wait { background-color: #adb5bd; color: #495057; border: 1px solid #dee2e6; }
-    .signal-label { font-size: 0.8rem; opacity: 0.9; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
-    .signal-main { font-size: 1.4rem; }
+    /* v10.2 Strategy CSS */
+    .strategy-card {
+        border-radius: 8px; padding: 12px; margin-bottom: 10px;
+        text-align: left; position: relative;
+    }
+    .strat-long { background-color: #e6fcf5; border: 1px solid #63e6be; color: #087f5b; }
+    .strat-short { background-color: #fff5f5; border: 1px solid #ff8787; color: #c92a2a; }
     
-    .rr-bar-bg { height: 6px; width: 100%; background: #e9ecef; border-radius: 3px; margin-top: 8px; overflow: hidden; display: flex; }
-    .rr-bar-fill { height: 100%; background: #228be6; }
+    .strat-header { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between;}
+    .strat-row { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; align-items: center; }
+    .strat-label { opacity: 0.8; }
+    .strat-val { font-weight: 700; font-size: 1rem; }
+    .strat-note { font-size: 0.65rem; opacity: 0.7; margin-top: 5px; font-style: italic; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -239,7 +242,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v10.1 Sniper"
+        return final_model, factors, "v10.2 Strategist"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -357,63 +360,51 @@ def show_live_dashboard():
     sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    # --- 🔫 Sniper Trading Signal Logic ---
-    curr_p = btdr['price']
+    # --- 📝 交易策略规划 (Trade Planner) ---
+    st.markdown("### ♟️ 交易计划 (Strategist Plan)")
     
-    # 1. 计算距离
-    dist_to_high = ((p_high - curr_p) / curr_p) * 100
-    dist_to_low = ((curr_p - p_low) / curr_p) * 100
+    # 策略计算
+    # 做多策略：挂单在 Low 上方一点点，止损在 Low 下方 1.5倍波动率
+    vol_price = btdr['prev'] * factors['vol_base']
+    buy_limit = p_low * 1.005 
+    buy_stop = p_low - (vol_price * 1.5)
+    buy_target = p_high * 0.99
+    buy_rr = (buy_target - buy_limit) / (buy_limit - buy_stop) if (buy_limit - buy_stop) > 0 else 0
     
-    # 2. 生成信号
-    signal_txt = "WAIT / HOLD"
-    signal_css = "sig-wait"
+    # 做空/止盈策略：挂单在 High 下方一点点
+    sell_limit = p_high * 0.995
+    sell_stop = p_high + (vol_price * 1.5)
+    sell_target = p_low * 1.01
     
-    # 强买：跌破支撑 + RSI超卖
-    if curr_p <= p_low * 1.01:
-        if factors['rsi'] < 35: signal_txt = "STRONG BUY (Oversold)"; signal_css = "sig-buy"
-        else: signal_txt = "BUY ZONE (Support)"; signal_css = "sig-buy"
-    # 强卖：突破阻力 + RSI超买
-    elif curr_p >= p_high * 0.99:
-        if factors['rsi'] > 65: signal_txt = "STRONG SELL (Overbought)"; signal_css = "sig-sell"
-        else: signal_txt = "SELL ZONE (Resist)"; signal_css = "sig-sell"
-    # 中间态
-    else:
-        # 靠近支撑
-        if dist_to_low < 1.5: signal_txt = "WATCH BUY"; signal_css = "sig-wait"
-        # 靠近阻力
-        elif dist_to_high < 1.5: signal_txt = "WATCH SELL"; signal_css = "sig-wait"
-
-    # 3. 盈亏比 (Reward/Risk)
-    # 假设此时做多，止损在 Low，止盈在 High
-    risk = curr_p - p_low
-    reward = p_high - curr_p
-    rr_ratio = reward / risk if risk > 0.01 else 0
-    rr_width = min(max((rr_ratio / 5) * 100, 5), 100) # 视觉条百分比
-    
-    st.markdown("### 🔫 狙击手信号 (Sniper Signals)")
-    sc1, sc2 = st.columns([1.5, 1])
-    with sc1:
+    sp1, sp2 = st.columns(2)
+    with sp1:
         st.markdown(f"""
-        <div class="signal-box {signal_css}">
-            <div class="signal-label">TRADING SIGNAL</div>
-            <div class="signal-main">{signal_txt}</div>
+        <div class="strategy-card strat-long">
+            <div class="strat-header">🟢 LONG SETUP (做多计划)</div>
+            <div class="strat-row"><span class="strat-label">挂单买入 (Limit Buy)</span><span class="strat-val">${buy_limit:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">第一止盈 (Target)</span><span class="strat-val">${buy_target:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">止损 (Stop Loss)</span><span class="strat-val" style="color:#c92a2a">${buy_stop:.2f}</span></div>
+            <div class="strat-note">预计盈亏比 R/R: 1 : {buy_rr:.2f}</div>
         </div>
         """, unsafe_allow_html=True)
-    with sc2:
+        
+    with sp2:
         st.markdown(f"""
-        <div style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:10px; height:100%;">
-            <div style="font-size:0.75rem; color:#888;">做多盈亏比 (R/R Ratio)</div>
-            <div style="font-size:1.2rem; font-weight:bold; color:#212529;">1 : {rr_ratio:.2f}</div>
-            <div class="rr-bar-bg"><div class="rr-bar-fill" style="width:{rr_width}%"></div></div>
+        <div class="strategy-card strat-short">
+            <div class="strat-header">🔴 SHORT/EXIT (卖出计划)</div>
+            <div class="strat-row"><span class="strat-label">挂单卖出 (Limit Sell)</span><span class="strat-val">${sell_limit:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">回补/接回 (Target)</span><span class="strat-val">${sell_target:.2f}</span></div>
+            <div class="strat-row"><span class="strat-label">防守止损 (Stop Loss)</span><span class="strat-val" style="color:#c92a2a">${sell_stop:.2f}</span></div>
+            <div class="strat-note">基于 1.5x 日内波动率设定风控</div>
         </div>
         """, unsafe_allow_html=True)
 
-    # Prediction Cards
+    # Prediction Visual
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > p_low else "#ffffff"
-    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div><div style="font-size:0.7rem;">空间: {dist_to_high:.1f}%</div></div></div>""", unsafe_allow_html=True)
-    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div><div style="font-size:0.7rem;">空间: {dist_to_low:.1f}%</div></div></div>""", unsafe_allow_html=True)
+    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力区间 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
+    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑区间 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
     # Macro
@@ -452,7 +443,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.1 Sniper | Signal: Dynamic Zone")
+    st.caption(f"Engine: v10.2 Strategist | Signal: Left-Side Setup")
 
-st.markdown("### ⚡ BTDR 领航员 v10.1 Sniper")
+st.markdown("### ⚡ BTDR 领航员 v10.2 Strategist")
 show_live_dashboard()
