@@ -10,7 +10,7 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v8.4", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v8.5", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
@@ -27,16 +27,15 @@ st.markdown("""
         color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
-    /* 【核心修复】强力锁定图表容器，根治抖动 */
+    /* 强力锁定图表容器，根治抖动 */
     div[data-testid="stAltairChart"] {
         height: 320px !important;
         min-height: 320px !important;
         overflow: hidden !important;
-        border: 1px solid #f8f9fa; /* 占位边框，防止视觉塌陷 */
+        border: 1px solid #f8f9fa; 
     }
     canvas { transition: opacity 0.2s ease-in-out; }
     
-    /* 指标卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
@@ -46,7 +45,6 @@ st.markdown("""
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* 因子小卡片 */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
@@ -60,7 +58,6 @@ st.markdown("""
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; }
     .dot-reg { background-color: #0ca678; } .dot-closed { background-color: #adb5bd; }
     
-    /* 日内预测框 */
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
     
@@ -73,7 +70,6 @@ st.markdown("""
 
 # --- 2. 状态管理 ---
 if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
-# 缓存自检
 if st.session_state['data_cache'] and 'grandmaster' not in st.session_state['data_cache']:
     st.session_state['data_cache'] = None
     st.rerun()
@@ -91,7 +87,7 @@ def factor_html(title, val, delta_str, delta_val, reverse_color=False):
     if reverse_color: color_class = "color-down" if delta_val >= 0 else "color-up"
     return f"""<div class="factor-box"><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
-st.markdown("### ⚡ BTDR 领航员 v8.4")
+st.markdown("### ⚡ BTDR 领航员 v8.5")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -110,7 +106,6 @@ c3, c4 = st.columns(2)
 with c3: ph_btdr_price = st.empty()
 with c4: ph_btdr_open = st.empty()
 
-# 日内预测标签
 st.markdown("### 🎯 日内阻力/支撑 (Intraday)")
 col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
@@ -127,7 +122,6 @@ micro_cols = st.columns(4)
 ph_micros = [col.empty() for col in micro_cols]
 
 st.markdown("### ☁️ 宗师级推演 (P90-P50-P10)")
-# 图表占位符
 ph_chart = st.empty()
 
 ph_footer = st.empty()
@@ -139,9 +133,7 @@ def run_grandmaster_analytics():
     default_factors = {"vwap": 0, "adx": 0, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05}
     
     try:
-        # 下载 6个月数据
         data = yf.download("BTDR BTC-USD QQQ ^VIX", period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
-        
         btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr = btdr.loc[idx]; btc = btc.loc[idx]; qqq = qqq.loc[idx]
@@ -162,7 +154,6 @@ def run_grandmaster_analytics():
         btdr['PV'] = btdr['TP'] * btdr['Volume']
         vwap_30d = btdr['PV'].tail(30).sum() / btdr['Volume'].tail(30).sum()
         
-        # ADX Calculation
         high = btdr['High']; low = btdr['Low']; close = btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
@@ -172,7 +163,6 @@ def run_grandmaster_analytics():
         
         plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr.replace(0, np.nan))
         minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr.replace(0, np.nan))
-        
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         adx = dx.rolling(14).mean().iloc[-1]
         if np.isnan(adx): adx = 20
@@ -274,7 +264,7 @@ def render_ui(data):
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     ph_micros[3].markdown(factor_html("Exp. Drift", f"{drift_est*100:+.2f}%", "Day", drift_est), unsafe_allow_html=True)
 
-    # --- 宗师级蒙特卡洛 (Grandmaster MC) [图表修复] ---
+    # --- 宗师级蒙特卡洛 (Grandmaster MC) [Tooltip 完美修复] ---
     if btdr['price'] > 0:
         vol = factors['vol_base']
         drift = drift_est
@@ -301,48 +291,55 @@ def render_ui(data):
         p50 = np.percentile(paths, 50, axis=0)
         p10 = np.percentile(paths, 10, axis=0)
         
-        # 【关键】宽表数据
+        # 宽表数据
         chart_data = []
         for d in range(days_ahead + 1):
             chart_data.append({
                 "Day": d,
-                "P90": p90[d],
-                "P50": p50[d],
-                "P10": p10[d],
+                "P90": round(p90[d], 2), # 提前格式化，确保数值整洁
+                "P50": round(p50[d], 2),
+                "P10": round(p10[d], 2),
             })
         df_chart = pd.DataFrame(chart_data)
         
-        # 【关键】绘图逻辑：区域 + 线条 + 多值Tooltip
+        # --- Altair 绘图 (Tooltip 修复核心逻辑) ---
+        
+        # 1. 基础 X 轴
         base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
         
-        # 1. 区域 (Range P10-P90)
+        # 2. 区域 (P10-P90)
         area = base.mark_area(opacity=0.2, color='#4dabf7').encode(
             y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)),
             y2='P90'
         )
         
-        # 2. 三条线
-        line_p90 = base.mark_line(color='#0ca678', strokeDash=[5,5], size=2).encode(y='P90') # 绿色虚线
-        line_p50 = base.mark_line(color='#228be6', size=3).encode(y='P50') # 蓝色实线
-        line_p10 = base.mark_line(color='#d6336c', strokeDash=[5,5], size=2).encode(y='P10') # 红色虚线
+        # 3. 三条线 (P90/P50/P10)
+        l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
+        l50 = base.mark_line(color='#228be6').encode(y='P50')
+        l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
         
-        # 3. 隐形点 (触发 Tooltip，格式化为2位小数)
-        points = base.mark_circle(size=100, opacity=0).encode(
-            y='P50',
+        # 4. 【关键】隐形触发器 + 全显 Tooltip
+        # 使用 mark_rule (竖线) 作为选择器，这样鼠标无论在哪，只要对齐了 X 轴就会触发
+        selectors = base.mark_rule(opacity=0).encode(
             tooltip=[
                 alt.Tooltip('Day', title='T+'),
                 alt.Tooltip('P90', title='P90 (High)', format='.2f'),
                 alt.Tooltip('P50', title='P50 (Median)', format='.2f'),
                 alt.Tooltip('P10', title='P10 (Low)', format='.2f')
             ]
-        )
+        ).add_params(alt.selection_point(name="hover", on="mouseover", nearest=True))
         
-        # 组合图表
-        chart = (area + line_p90 + line_p50 + line_p10 + points).interactive()
+        # 5. 为了美观，给选中点加个小圆点
+        points = base.mark_circle(size=60, color="black").encode(
+            y='P50',
+            opacity=alt.condition("hover", alt.value(1), alt.value(0)) # 只有选中时才显示
+        )
+
+        chart = (area + l90 + l50 + l10 + selectors + points).properties(height=280).interactive()
         
         ph_chart.altair_chart(chart, use_container_width=True)
 
-    ph_footer.caption(f"Engine: v8.4 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
+    ph_footer.caption(f"Engine: v8.5 Grandmaster | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
