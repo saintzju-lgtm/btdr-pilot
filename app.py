@@ -41,20 +41,21 @@ st.markdown("""
     /* 卡片样式 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 12px;
-        height: 90px; padding: 0 16px; display: flex; flex-direction: column; justify-content: center;
+        height: 95px; padding: 0 16px; display: flex; flex-direction: column; justify-content: center;
         box-shadow: 0 1px 2px rgba(0,0,0,0.02);
     }
     .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
-    .metric-value { font-size: 1.7rem; font-weight: 700; color: #212529; line-height: 1.1; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.1; }
     .metric-delta { font-size: 0.85rem; font-weight: 600; margin-top: 2px; }
     
     /* 因子样式 (带悬停) */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
-        height: 70px; display: flex; flex-direction: column; justify-content: center;
+        height: 75px; display: flex; flex-direction: column; justify-content: center;
         position: relative; cursor: help;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
     }
-    .factor-box:hover { border-color: #adb5bd; }
+    .factor-box:hover { border-color: #adb5bd; transform: translateY(-1px); }
     .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; }
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
@@ -82,11 +83,15 @@ st.markdown("""
 
 # --- 3. 辅助函数 ---
 def safe_float(val, default=0.0):
+    """强力数据清洗：确保返回 float，绝不报错，绝不返回 nan"""
     try:
         if val is None: return default
-        if isinstance(val, (pd.Series, pd.DataFrame)):
+        # 如果是 Pandas Series/DF，取最后一个值
+        if hasattr(val, "empty"):
             if val.empty: return default
-            val = val.iloc[-1]
+            # 尝试取最后一个值
+            if hasattr(val, "iloc"): val = val.iloc[-1]
+        
         f = float(val)
         if np.isnan(f) or np.isinf(f): return default
         return f
@@ -113,13 +118,15 @@ def fetch_data():
     fng = 50
     
     try:
-        # 1. 简单抓取
+        # 1. 简单抓取 (不使用多线程，防止 Streamlit 报错)
         tickers = "BTDR BTC-USD QQQ ^VIX MARA RIOT CORZ CLSK IREN"
-        # 强制不使用线程，避免 Streamlit 报错
-        hist = yf.download(tickers, period="6mo", interval="1d", group_by='ticker', threads=False, progress=False)
+        
+        # 抓取日线 (1年) 用于因子和兜底
+        hist = yf.download(tickers, period="1y", interval="1d", group_by='ticker', threads=False, progress=False)
+        # 抓取分钟线 (1天) 用于实时
         live = yf.download(tickers, period="1d", interval="1m", prepost=True, group_by='ticker', threads=False, progress=False)
         
-        today = datetime.now(pytz.timezone('America/New_York')).date()
+        today_ny = datetime.now(pytz.timezone('America/New_York')).date()
         syms = tickers.split()
         
         # 2. 处理行情 (Quotes)
@@ -128,35 +135,37 @@ def fetch_data():
                 df_d = hist[s] if s in hist else pd.DataFrame()
                 df_m = live[s] if s in live else pd.DataFrame()
                 
-                # 价格
+                # --- 价格判定 ---
                 price = 0.0
                 state = "ERR"
                 
-                # 优先分钟
+                # 优先用分钟线
                 if not df_m.empty:
                     val = safe_float(df_m['Close'])
                     if val > 0: price = val; state = "REG"
                 
-                # 兜底日线
+                # 兜底用日线
                 if price == 0 and not df_d.empty:
                     price = safe_float(df_d['Close'])
                     state = "CLOSED"
                 
-                # 昨收 & 开盘
+                # --- 昨收 & 开盘 ---
                 prev = 0.0
                 open_p = 0.0
                 
                 if not df_d.empty:
                     last_dt = df_d.index[-1].date()
-                    if last_dt == today and len(df_d) > 1:
+                    if last_dt == today_ny and len(df_d) > 1:
+                        # 交易中
                         prev = safe_float(df_d['Close'].iloc[-2])
                         open_p = safe_float(df_d['Open'].iloc[-1])
                     else:
+                        # 盘前/未开盘
                         prev = safe_float(df_d['Close'].iloc[-1])
                         open_p = price # 暂用当前价
                 
-                # 强行修正
-                if price == 0: price = 10.0 # 避免UI崩坏
+                # 强行修正0值
+                if price == 0: price = 10.0 # 防止UI崩坏
                 if prev == 0: prev = price
                 if open_p == 0: open_p = price
                 
@@ -221,7 +230,7 @@ def fetch_data():
         return quotes, fng, model, factors
         
     except Exception as e:
-        # print(e)
+        # print(e) # 用于调试，生产环境注释掉
         return quotes, 50, default_model, default_factors
 
 # --- 5. 局部刷新 UI (Fragment) ---
