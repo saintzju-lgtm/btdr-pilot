@@ -439,5 +439,5 @@ def show_live_dashboard():
     st.caption(f"Engine: v9.4 Night | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
 # --- 7. 主程序入口 ---
-st.markdown("### ⚡ BTDR 领航员 v9.4 Night")
+st.markdown("### ⚡ BTDR Pilot v9.4")
 show_live_dashboard()
