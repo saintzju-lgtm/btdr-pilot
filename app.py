@@ -8,8 +8,8 @@ import altair as alt
 from datetime import datetime, time as dt_time
 import pytz
 
-# --- 1. 页面配置 & 样式 (合并了 v10.1 和 v10.2 的所有样式) ---
-st.set_page_config(page_title="BTDR Pilot v10.3 Command", layout="centered")
+# --- 1. 页面配置 & 样式 ---
+st.set_page_config(page_title="BTDR Pilot v10.4 Interactive", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -51,6 +51,7 @@ CUSTOM_CSS = """
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
+    /* 因子卡片样式 */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -62,6 +63,7 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
+    /* 通用 Tooltip 样式 */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -78,7 +80,9 @@ CUSTOM_CSS = """
         border-width: 5px; border-style: solid;
         border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
+    /* 激活 Tooltip 的规则 */
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
+    .signal-box:hover .tooltip-text { visibility: visible; opacity: 1; } /* 新增这一行 */
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
@@ -101,8 +105,13 @@ CUSTOM_CSS = """
     .bar-hist { background-color: #fab005; width: 30%; }
     .bar-mom { background-color: #fa5252; width: 20%; }
     
-    /* Sniper Signals */
-    .signal-box { border-radius: 8px; padding: 12px; margin-bottom: 15px; text-align: center; font-weight: bold; color: white; display: flex; flex-direction: column; justify-content: center; height: 100%; }
+    /* Sniper Signals (Updated for Tooltip) */
+    .signal-box { 
+        border-radius: 8px; padding: 12px; margin-bottom: 15px; 
+        text-align: center; font-weight: bold; color: white; 
+        display: flex; flex-direction: column; justify-content: center; 
+        height: 100%; position: relative; cursor: help; /* 增加相对定位和鼠标样式 */
+    }
     .sig-buy { background-color: #0ca678; box-shadow: 0 4px 12px rgba(12, 166, 120, 0.3); border: 1px solid #099268; }
     .sig-sell { background-color: #e03131; box-shadow: 0 4px 12px rgba(224, 49, 49, 0.3); border: 1px solid #c92a2a; }
     .sig-wait { background-color: #ced4da; color: #495057; border: 1px solid #adb5bd; }
@@ -251,7 +260,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v10.3 Command"
+        return final_model, factors, "v10.4 Interactive"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -376,24 +385,33 @@ def show_live_dashboard():
     dist_to_high = ((p_high - curr_p) / curr_p) * 100
     dist_to_low = ((curr_p - p_low) / curr_p) * 100
     
-    # 1. Generate Signal Text
+    # 1. Generate Signal & Tooltip
     signal_txt = "WAIT / HOLD"
     signal_css = "sig-wait"
     sub_txt = "等待方向确认"
+    tooltip_msg = "当前价格处于中间区域，多空博弈不明朗，建议观望等待。"
     
     if curr_p <= p_low * 1.015:
         if factors['rsi'] < 35: 
             signal_txt = "STRONG BUY"; signal_css = "sig-buy"; sub_txt = "超卖区域 + 支撑确认"
+            tooltip_msg = "【强力买入理由】\n1. 价格跌破日内支撑位\n2. RSI指标进入超卖区(<35)\n3. 盈亏比极佳"
         else: 
             signal_txt = "BUY ZONE"; signal_css = "sig-buy"; sub_txt = "接近日内支撑"
+            tooltip_msg = "【买入区域】\n价格已接近模型预测的日内低点，可尝试左侧挂单建仓。"
     elif curr_p >= p_high * 0.985:
         if factors['rsi'] > 65: 
             signal_txt = "STRONG SELL"; signal_css = "sig-sell"; sub_txt = "超买区域 + 阻力确认"
+            tooltip_msg = "【强力卖出理由】\n1. 价格触及日内阻力位\n2. RSI指标进入超买区(>65)\n3. 短期回调风险大"
         else: 
             signal_txt = "SELL ZONE"; signal_css = "sig-sell"; sub_txt = "接近日内阻力"
+            tooltip_msg = "【卖出区域】\n价格已接近模型预测的日内高点，建议分批止盈或做空。"
     else:
-        if dist_to_low < 2.0: signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"
-        elif dist_to_high < 2.0: signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"
+        if dist_to_low < 2.0: 
+            signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"
+            tooltip_msg = "价格正在向支撑位靠拢，请密切关注 RSI 指标是否企稳。"
+        elif dist_to_high < 2.0: 
+            signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"
+            tooltip_msg = "价格正在向阻力位靠拢，若动能不足可能回落。"
 
     # 2. Strategy Levels
     vol_price = btdr['prev'] * factors['vol_base']
@@ -411,6 +429,7 @@ def show_live_dashboard():
     with cmd1:
         st.markdown(f"""
         <div class="signal-box {signal_css}">
+            <div class="tooltip-text">{tooltip_msg}</div>
             <div class="signal-label">CURRENT SIGNAL</div>
             <div class="signal-main">{signal_txt}</div>
             <div class="signal-sub">{sub_txt}</div>
@@ -482,7 +501,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.3 Command | Signal: Multi-Factor")
+    st.caption(f"Engine: v10.4 Interactive | Signal: Hover for details")
 
-st.markdown("### ⚡ BTDR 领航员 v10.3 Command")
+st.markdown("### ⚡ BTDR 领航员 v10.4 Interactive")
 show_live_dashboard()
