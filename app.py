@@ -235,4 +235,87 @@ def render_ui(data):
 
     # --- 4. BTDR 本体 (使用统一 HTML) ---
     state_map = {"PRE": "dot-pre", "REG": "dot-reg", "POST": "dot-post", "CLOSED": "dot-closed"}
-    dot_class = state_map.
+    dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
+    status_tag = f"<span class='status-dot {dot_class}'></span> <span style='margin-left:2px; font-size:0.7rem;'>{btdr.get('tag', 'CLOSED')}</span>"
+    
+    ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
+    
+    # 这里的"计算用开盘"也换成了统一大字号卡片
+    ph_btdr_open.markdown(card_html("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%", btdr_open_pct), unsafe_allow_html=True)
+    
+    # --- 5. 预测框 ---
+    h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
+    l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
+
+    ph_pred_high.markdown(f"""
+    <div class="pred-container-wrapper">
+        <div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;">
+            <div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div>
+            <div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div>
+            <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_high_pct:+.2f}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    ph_pred_low.markdown(f"""
+    <div class="pred-container-wrapper">
+        <div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;">
+            <div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div>
+            <div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div>
+            <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_low_pct:+.2f}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    ph_footer.caption(f"Update: {now_ny} ET | Auto-Tuned by AI")
+
+# --- 7. 数据获取 ---
+@st.cache_data(ttl=5)
+def get_data_v74():
+    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
+    try:
+        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
+        live = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
+        quotes = {}
+        symbols = tickers_list.split()
+        today_ny = datetime.now(pytz.timezone('America/New_York')).date()
+        
+        for sym in symbols:
+            try:
+                df_day = daily[sym] if sym in daily else pd.DataFrame()
+                if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
+                df_min = live[sym] if sym in live else pd.DataFrame()
+                if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
+                
+                # 实时价
+                state = "REG" if not df_min.empty else "CLOSED"
+                current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
+                
+                # 昨收
+                prev_close = 1.0
+                if not df_day.empty:
+                    last_date = df_day.index[-1].date()
+                    if last_date == today_ny:
+                        if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
+                        elif not df_day.empty: prev_close = df_day['Open'].iloc[-1]
+                    else: prev_close = df_day['Close'].iloc[-1]
+                
+                pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                open_price = df_day['Open'].iloc[-1] if not df_day.empty and df_day.index[-1].date() == today_ny else current_price
+                quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "tag": state}
+            except: quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR"}
+        return quotes
+    except: return None
+
+# --- 8. 执行流 ---
+if st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
+else: ph_time.info("📡 正在统一视觉系统...")
+
+new_quotes = get_data_v74()
+ai_model, ai_status = auto_tune_model()
+
+if new_quotes:
+    try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
+    except: fng = 50
+    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'model_status': ai_status}
+    render_ui(st.session_state['data_cache'])
