@@ -10,7 +10,7 @@ import pytz
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v7.6", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v7.7", layout="centered")
 
 # 5秒刷新
 st_autorefresh(interval=5000, limit=None, key="realtime_counter")
@@ -70,16 +70,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 状态管理与热修复 (关键修改) ---
-if 'data_cache' not in st.session_state:
-    st.session_state['data_cache'] = None
+# --- 2. 状态管理与自愈 ---
+if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
 
-# 【自愈修复】检查缓存是否包含新版本所需的字段
+# 自愈：如果缓存里没有 monte_carlo 数据，清空重跑
 if st.session_state['data_cache'] is not None:
-    # 如果缓存里没有 'trend' 这个新字段，说明是旧缓存，必须清除
-    if 'trend' not in st.session_state['data_cache']:
+    if 'mc_data' not in st.session_state['data_cache']:
         st.session_state['data_cache'] = None
-        st.rerun() # 立即重启，重新下载数据
+        st.rerun()
 
 # --- 3. 辅助函数 ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
@@ -95,7 +93,7 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     </div>
     """
 
-st.markdown("### ⚡ BTDR 领航员 v7.6")
+st.markdown("### ⚡ BTDR 领航员 v7.7")
 
 # --- 4. UI 骨架 ---
 ph_time = st.empty()
@@ -122,39 +120,40 @@ col_h, col_l = st.columns(2)
 with col_h: ph_pred_high = st.empty()
 with col_l: ph_pred_low = st.empty()
 
-# 趋势推演
-st.markdown("### 📈 未来5日趋势推演 (Trend)")
+# 蒙特卡洛预测
+st.markdown("### ☁️ 概率云推演 (Monte Carlo)")
 ph_chart = st.empty() # 图表占位符
-col_t1, col_t2 = st.columns(2)
-with col_t1: ph_trend_bull = st.empty()
-with col_t2: ph_trend_bear = st.empty()
+col_mc1, col_mc2 = st.columns(2)
+with col_mc1: ph_mc_bull = st.empty()
+with col_mc2: ph_mc_bear = st.empty()
 
 st.markdown("---")
 ph_footer = st.empty()
 
-# --- 5. 核心逻辑：AI 调参 + 趋势计算 ---
+# --- 5. 核心逻辑：蒙特卡洛模拟 ---
 @st.cache_data(ttl=3600)
-def auto_tune_and_trend():
-    # 默认参数
+def run_analytics():
     default_model = {
         "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
         "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
         "beta_sector": 0.25
     }
-    trend_factors = {"volatility": 0.05, "drift": 0.0}
+    # 默认模拟参数
+    mc_params = {"volatility": 0.05, "drift": 0.0}
 
     try:
-        # 获取30天数据
-        df = yf.download("BTDR", period="1mo", interval="1d", progress=False)
-        if len(df) < 10: return default_model, trend_factors, "数据不足"
+        # 1. 获取历史数据
+        df = yf.download("BTDR", period="3mo", interval="1d", progress=False)
+        if len(df) < 30: return default_model, mc_params, "数据不足"
         
         if isinstance(df.columns, pd.MultiIndex): df = df.xs('BTDR', axis=1, level=1)
         df = df.dropna()
         
-        # 1. 计算日内模型参数
-        df_reg = df.copy()
+        # 2. 计算日内模型 (Regression)
+        df_reg = df.tail(30).copy() # 只用最近30天算回归
         df_reg['PrevClose'] = df_reg['Close'].shift(1)
         df_reg = df_reg.dropna()
+        
         x = ((df_reg['Open'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
         y_high = ((df_reg['High'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
         y_low = ((df_reg['Low'] - df_reg['PrevClose']) / df_reg['PrevClose'] * 100).values
@@ -162,35 +161,32 @@ def auto_tune_and_trend():
         cov_h = np.cov(x, y_high); beta_h = cov_h[0, 1] / cov_h[0, 0] if cov_h[0, 0] != 0 else 0.67
         cov_l = np.cov(x, y_low); beta_l = cov_l[0, 1] / cov_l[0, 0] if cov_l[0, 0] != 0 else 0.88
         
-        # 2. 计算趋势因子
-        returns = df['Close'].pct_change().dropna()
-        volatility = returns.std()
-        drift = returns.tail(10).mean()
+        # 3. 计算蒙特卡洛参数 (Volatility & Drift)
+        # 使用对数收益率
+        log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
+        volatility = log_returns.std() # 日波动率
+        drift = log_returns.mean() # 日均漂移 (趋势)
         
-        trend_factors = {
-            "volatility": volatility, 
-            "drift": drift
-        }
+        mc_params = {"volatility": volatility, "drift": drift}
 
         final_model = {
             "high": {"intercept": 0.7*4.29 + 0.3*(np.mean(y_high)-beta_h*np.mean(x)), "beta_open": 0.7*0.67 + 0.3*np.clip(beta_h,0.3,1.2), "beta_btc": 0.52},
             "low": {"intercept": 0.7*-3.22 + 0.3*(np.mean(y_low)-beta_l*np.mean(x)), "beta_open": 0.7*0.88 + 0.3*np.clip(beta_l,0.4,1.5), "beta_btc": 0.42},
             "beta_sector": 0.25
         }
-        return final_model, trend_factors, "AI在线"
+        return final_model, mc_params, "Monte Carlo Ready"
     except: 
-        return default_model, trend_factors, "离线模式"
+        return default_model, mc_params, "离线模式"
 
 # --- 6. 渲染函数 ---
 def render_ui(data):
     if not data: return
-    # 二次检查，防止空数据报错
-    if 'trend' not in data: return
+    if 'mc_params' not in data: return
 
     quotes = data['quotes']
     fng_val = data['fng']
     model_params = data['model']
-    trend_factors = data['trend']
+    mc_params = data['mc_params']
     model_status = data['status']
     
     btc_chg = quotes['BTC-USD']['pct']
@@ -213,7 +209,7 @@ def render_ui(data):
             val = quotes[p]['pct']
             ph_peers[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
             
-    # 计算日内预测
+    # 日内预测计算
     valid_peers = [p for p in peers if quotes[p]['price'] > 0]
     peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers) if valid_peers else 0
     sector_alpha = peers_avg - btc_chg
@@ -241,65 +237,97 @@ def render_ui(data):
     h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
 
-    ph_pred_high.markdown(f"""
-    <div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;">
-        <div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div>
-        <div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div>
-        <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_high_pct:+.2f}%</div>
+    ph_pred_high.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;">
+        <div style="font-size: 0.8rem; opacity: 0.8;">日内阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div><div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_high_pct:+.2f}%</div>
     </div></div>""", unsafe_allow_html=True)
-    
-    ph_pred_low.markdown(f"""
-    <div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;">
-        <div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div>
-        <div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div>
-        <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_low_pct:+.2f}%</div>
+    ph_pred_low.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;">
+        <div style="font-size: 0.8rem; opacity: 0.8;">日内支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div><div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_low_pct:+.2f}%</div>
     </div></div>""", unsafe_allow_html=True)
 
-    # --- 渲染趋势图 ---
+    # --- 渲染蒙特卡洛图表 (Real-time MC) ---
     if btdr['price'] > 0:
-        vol = trend_factors.get('volatility', 0.05)
-        vol = max(vol, 0.04)
+        vol = mc_params.get('volatility', 0.05)
+        drift = mc_params.get('drift', 0.0)
         current = btdr['price']
-        days = 5
         
-        future_data = []
-        future_data.append({"Day": 0, "Price": current, "Type": "Base"})
-        future_data.append({"Day": 0, "Price": current, "Type": "Bull"})
-        future_data.append({"Day": 0, "Price": current, "Type": "Bear"})
+        # 1. 运行模拟 (200条路径)
+        days_ahead = 5
+        simulations = 200
+        # 如果不是交易时间，波动率稍微调低一点点，避免过度夸张
+        if btdr.get('tag') == 'CLOSED': vol *= 0.8 
         
-        for d in range(1, days + 1):
-            bull_p = current * (1 + vol * d)
-            bear_p = current * (1 - vol * d)
-            base_p = current
+        sim_data = []
+        
+        # 为了 Altair 绘图，我们需要生成置信区间
+        # P95, P75, P50, P25, P5
+        
+        paths = []
+        for i in range(simulations):
+            path = [current]
+            p = current
+            for d in range(days_ahead):
+                # 几何布朗运动: S_t = S_{t-1} * exp((mu - 0.5*sigma^2) + sigma*Z)
+                shock = np.random.normal(0, 1)
+                change = (drift - 0.5 * vol**2) + vol * shock
+                p = p * np.exp(change)
+                path.append(p)
+            paths.append(path)
             
-            future_data.append({"Day": d, "Price": base_p, "Type": "Base"})
-            future_data.append({"Day": d, "Price": bull_p, "Type": "Bull"})
-            future_data.append({"Day": d, "Price": bear_p, "Type": "Bear"})
+        paths = np.array(paths) # shape: (200, 6)
+        
+        # 计算百分位数
+        percentiles = np.percentile(paths, [10, 50, 90], axis=0)
+        
+        chart_df = []
+        for d in range(days_ahead + 1):
+            chart_df.append({"Day": d, "Price": percentiles[1][d], "Type": "P50 (中位数)"}) # P50
+            chart_df.append({"Day": d, "Price": percentiles[2][d], "Type": "P90 (乐观边界)"}) # P90
+            chart_df.append({"Day": d, "Price": percentiles[0][d], "Type": "P10 (悲观边界)"}) # P10
             
-        df_chart = pd.DataFrame(future_data)
+        df_chart = pd.DataFrame(chart_df)
         
-        chart = alt.Chart(df_chart).mark_line(point=True).encode(
-            x=alt.X('Day:O', title='未来交易日'),
-            y=alt.Y('Price', title='价格预演', scale=alt.Scale(zero=False)),
-            color=alt.Color('Type', scale=alt.Scale(domain=['Bull', 'Base', 'Bear'], range=['#0ca678', '#adb5bd', '#d6336c'])),
-            tooltip=['Day', 'Price', 'Type']
-        ).properties(height=200).interactive()
+        # Altair 图表：用 Area 表示范围，用 Line 表示中位数
         
+        # 1. 区域图 (P10 - P90) - 也就是80%的置信区间
+        base = alt.Chart(df_chart).encode(x=alt.X('Day:O', title='未来交易日'))
+        
+        area = base.mark_area(opacity=0.3, color='#4dabf7').encode(
+            y=alt.Y('Price', title='概率分布'),
+            y2='Price_Low',
+        ).transform_filter(
+            alt.FieldOneOfPredicate(field='Type', oneOf=['P90 (乐观边界)'])
+        ).transform_lookup(
+            lookup='Day',
+            from_=alt.LookupData(df_chart[df_chart['Type'] == 'P10 (悲观边界)'], 'Day', ['Price']),
+            as_=['Price_Low']
+        )
+        
+        # 线图
+        lines = base.mark_line(point=True).encode(
+            y='Price',
+            color=alt.Color('Type', scale=alt.Scale(
+                domain=['P90 (乐观边界)', 'P50 (中位数)', 'P10 (悲观边界)'],
+                range=['#0ca678', '#339af0', '#d6336c']
+            ))
+        )
+        
+        chart = (lines).properties(height=220).interactive()
         ph_chart.altair_chart(chart, use_container_width=True)
         
-        target_bull = current * (1 + vol * 5)
-        target_bear = current * (1 - vol * 5)
-        bull_pct = vol * 5 * 100
-        bear_pct = -vol * 5 * 100
+        # 计算 P90 和 P10 的最终目标价
+        p90_end = percentiles[2][-1]
+        p10_end = percentiles[0][-1]
+        p90_pct = ((p90_end - current) / current) * 100
+        p10_pct = ((p10_end - current) / current) * 100
         
-        ph_trend_bull.markdown(card_html("5日目标 (Bull)", f"${target_bull:.2f}", f"+{bull_pct:.1f}%", bull_pct), unsafe_allow_html=True)
-        ph_trend_bear.markdown(card_html("5日目标 (Bear)", f"${target_bear:.2f}", f"{bear_pct:.1f}%", bear_pct), unsafe_allow_html=True)
+        ph_mc_bull.markdown(card_html("P90 乐观边界", f"${p90_end:.2f}", f"{p90_pct:+.1f}%", p90_pct), unsafe_allow_html=True)
+        ph_mc_bear.markdown(card_html("P10 悲观边界", f"${p10_end:.2f}", f"{p10_pct:+.1f}%", p10_pct), unsafe_allow_html=True)
 
-    ph_footer.caption(f"Update: {now_ny} ET | Trend Volatility: {trend_factors.get('volatility',0)*100:.1f}%")
+    ph_footer.caption(f"Update: {now_ny} ET | Volatility: {mc_params.get('volatility',0)*100:.1f}% | Sims: 200")
 
 # --- 7. 数据获取 ---
 @st.cache_data(ttl=5)
-def get_data_v75():
+def get_data_v76():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
     try:
         daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
@@ -334,14 +362,11 @@ def get_data_v75():
     except: return None
 
 # --- 8. 执行流 ---
-# 安全渲染：只有当缓存存在且格式正确时才渲染，否则跳过
-if st.session_state['data_cache'] and 'trend' in st.session_state['data_cache']: 
-    render_ui(st.session_state['data_cache'])
-else: 
-    ph_time.info("📡 正在升级趋势引擎...")
+if st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
+else: ph_time.info("📡 启动蒙特卡洛引擎...")
 
-new_quotes = get_data_v75()
-ai_model, ai_trend, ai_status = auto_tune_and_trend()
+new_quotes = get_data_v76()
+ai_model, ai_mc, ai_status = run_analytics()
 
 if new_quotes:
     try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
@@ -350,7 +375,8 @@ if new_quotes:
         'quotes': new_quotes, 
         'fng': fng, 
         'model': ai_model, 
-        'trend': ai_trend,
+        'mc_params': ai_mc,
+        'mc_data': "ready", # 标记位
         'status': ai_status
     }
     render_ui(st.session_state['data_cache'])
