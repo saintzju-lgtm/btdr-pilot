@@ -81,10 +81,15 @@ def safe_get(val, default=0.0):
     """强力清洗数据，防止 NaN 或 Inf 导致报错"""
     try:
         if val is None: return default
+        # 如果是 Series，取最后一个值
         if isinstance(val, (pd.Series, pd.DataFrame)):
             if val.empty: return default
             val = val.iloc[-1]
+        
+        # 转浮点
         val = float(val)
+        
+        # 检查 NaN / Inf
         if np.isnan(val) or np.isinf(val): return default
         return val
     except: return default
@@ -127,14 +132,16 @@ def fetch_all_data():
                 # 1. 确定价格 (优先分钟线，兜底日线)
                 price = 0.0
                 state = "ERR"
+                # 尝试从分钟线获取
                 if not df_m.empty:
-                    val = safe_get(df_m['Close'])
+                    val = safe_get(df_m['Close'], 0)
                     if val > 0: 
                         price = val
                         state = "REG"
                 
+                # 如果分钟线挂了，强制用日线最新值
                 if price == 0 and not df_d.empty:
-                    price = safe_get(df_d['Close'])
+                    price = safe_get(df_d['Close'], 0)
                     state = "CLOSED"
                 
                 # 2. 确定基准 (昨收 Prev & 开盘 Open)
@@ -318,7 +325,7 @@ def show_live_dashboard():
     with mi3: st.markdown(factor_html("Implied Vol", f"{factors['vol_base']*100:.1f}%", "Risk", 0, "潜在波动率"), unsafe_allow_html=True)
     with mi4: st.markdown(factor_html("Exp. Drift", f"{drift*100:+.2f}%", "Day", drift, "当日预期漂移率"), unsafe_allow_html=True)
     
-    # 8. 宗师级图表 (Tooltip 修复)
+    # 8. 图表
     st.markdown("### ☁️ 宗师级推演 (P90-P50-P10)")
     
     vol = factors['vol_base']
@@ -359,7 +366,7 @@ def show_live_dashboard():
     st.altair_chart((area + l90 + l50 + l10 + selectors + points).properties(height=300).interactive(), use_container_width=True)
     st.caption(f"Engine: v9.9 Hybrid-Fix | Drift: {drift*100:.2f}% | Vol: {vol*100:.1f}%")
 
-# --- 8. 执行 ---
+# --- 8. 执行 (先定义好所有函数，最后再调用) ---
 if __name__ == "__main__":
     st.markdown("### ⚡ BTDR 领航员 v9.9")
     show_live_dashboard()
