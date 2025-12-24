@@ -9,15 +9,15 @@ from datetime import datetime, time as dt_time
 import pytz
 from scipy.stats import norm
 
-# --- 0. 防崩溃导入 (Safe Import) ---
+# --- 0. 防崩溃导入 ---
 try:
     import plotly.graph_objects as go
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# --- 1. 页面配置 (保持原始布局) ---
-st.set_page_config(page_title="BTDR Pilot v11.4 Stable", layout="centered")
+# --- 1. 页面配置 ---
+st.set_page_config(page_title="BTDR Pilot v11.5 Hotfix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -25,7 +25,6 @@ CUSTOM_CSS = """
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     h1, h2, h3, h4, div, p, span { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; }
 
-    /* 核心卡片 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px; padding: 15px; height: 100px;
@@ -40,7 +39,6 @@ CUSTOM_CSS = """
 
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
 
-    /* 信号盒子 */
     .signal-box { 
         border-radius: 8px; padding: 15px; text-align: center; color: white; 
         height: 100%; display: flex; flex-direction: column; justify-content: center;
@@ -53,7 +51,6 @@ CUSTOM_CSS = """
     .signal-main { font-size: 1.6rem; font-weight: 900; }
     .signal-sub { font-size: 0.8rem; opacity: 0.9; margin-top: 5px; font-weight: normal; }
 
-    /* 交易计划卡片 */
     .plan-card {
         background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 15px;
         height: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.02);
@@ -63,7 +60,6 @@ CUSTOM_CSS = """
     .plan-label { color: #888; }
     .plan-val { font-weight: 600; font-family: 'Roboto Mono', monospace; }
     
-    /* Tooltip */
     .tooltip-text {
         visibility: hidden; width: 200px; background-color: rgba(33, 37, 41, 0.95);
         color: #fff !important; text-align: center; border-radius: 6px; padding: 8px;
@@ -78,18 +74,15 @@ CUSTOM_CSS = """
     }
     .metric-card:hover .tooltip-text, .signal-box:hover .tooltip-text, .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
 
-    /* 矿股小卡片 */
     .miner-card { background-color: #fff; border: 1px solid #e9ecef; border-radius: 8px; padding: 8px; text-align: center; height: 80px; display: flex; flex-direction: column; justify-content: center; }
     .miner-sym { font-size: 0.7rem; color: #888; font-weight: 700; }
     .miner-price { font-size: 1rem; font-weight: 700; color: #212529; margin: 2px 0; }
     .miner-sub { font-size: 0.65rem; color: #868e96; }
 
-    /* 顶部栏 */
     .top-bar { display: flex; justify-content: space-between; align-items: center; background: #f8f9fa; padding: 8px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 0.8rem; color: #666; }
     .status-tag { padding: 2px 6px; border-radius: 4px; color: white; font-weight: 600; font-size: 0.7rem; margin-left: 5px;}
     .tag-open { background: #0ca678; } .tag-closed { background: #868e96; }
     
-    /* Factor Box */
     .factor-box {
         background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
         height: 75px; display: flex; flex-direction: column; justify-content: center;
@@ -117,7 +110,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 3. 辅助函数 (HTML修复：强制单行，解决乱码问题) ---
+# --- 3. 辅助函数 (修复 TypeError: tooltip_text 设为可选参数) ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
     delta_html = ""
     if delta_str:
@@ -127,20 +120,21 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", toolt
     tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
     card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
     
-    # 关键：全部写在一行，避免缩进导致 Markdown 解析错误
     return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
-def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
+# [FIX] 关键修复：tooltip_text=None，防止 TypeError
+def factor_html(title, val, delta_str, delta_val, tooltip_text=None, reverse_color=False):
     is_positive = delta_val >= 0
     if reverse_color: is_positive = not is_positive
     color_class = "color-up" if is_positive else "color-down"
-    return f"""<div class="factor-box"><div class="tooltip-text">{tooltip_text}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
+    tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
+    return f"""<div class="factor-box">{tooltip_html}<div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
 
 def miner_card_html(sym, price, pct, turnover):
     color_class = "color-up" if pct >= 0 else "color-down"
     return f"""<div class="miner-card"><div class="miner-sym">{sym}</div><div class="miner-price ${color_class}">${price:.2f}</div><div class="miner-sub"><span class="{color_class}">{pct:+.1f}%</span> | 换{turnover:.1f}%</div></div>"""
 
-# --- 4. 核心计算 (Kalman + WLS) ---
+# --- 4. 核心计算 ---
 def run_kalman_filter(y, x, delta=1e-4):
     n = len(y); beta = np.zeros(n); P = np.zeros(n); beta[0]=1.0; P[0]=1.0; R=0.002; Q=delta/(1-delta)
     for t in range(1, n):
@@ -164,7 +158,6 @@ def run_grandmaster_analytics():
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
         
-        # Correlations
         correlations = {}
         for m in MINER_POOL:
             if m in data:
@@ -174,7 +167,6 @@ def run_grandmaster_analytics():
                 else: correlations[m] = 0
         top_peers = sorted(correlations, key=correlations.get, reverse=True)[:5]
 
-        # Factors
         ret_btdr = btdr['Close'].pct_change().fillna(0).values
         ret_btc = btc['Close'].pct_change().fillna(0).values
         ret_qqq = qqq['Close'].pct_change().fillna(0).values
@@ -198,7 +190,6 @@ def run_grandmaster_analytics():
 
         factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, "adx": 25, "regime": "Trend", "rsi": rsi, "vol_base": vol_base, "atr_ratio": atr_ratio, "avg_vol": avg_vol_5d}
 
-        # WLS
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
         df_reg['High'] = btdr['High']; df_reg['Low'] = btdr['Low']
@@ -222,11 +213,11 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v11.4 Stable"
+        return final_model, factors, "v11.5 Hotfix"
     except Exception as e:
         return default_model, default_factors, "Offline"
 
-# --- 5. 实时数据 (彻底修复 KeyError: 必须包含所有 UI 字段) ---
+# --- 5. 实时数据 (修复 KeyError: 补全所有字典 Key) ---
 def determine_market_state(now_ny):
     weekday = now_ny.weekday(); curr_min = now_ny.hour * 60 + now_ny.minute
     if weekday == 5: return "Weekend", "dot-closed"
@@ -272,13 +263,13 @@ def get_realtime_data():
                 
                 pct = ((curr_price - prev_close)/prev_close)*100 if prev_close else 0
                 
-                # [FIXED] 必须包含所有 UI 渲染需要的 key
+                # [FIX] 完整的数据结构，防止 KeyError
                 quotes[sym] = {
                     "price": curr_price, "pct": pct, "prev": prev_close, 
                     "open": open_price, "volume": curr_vol, "css": state_css, "tag": state_tag
                 }
             except: 
-                # [FIXED] 异常时也要提供默认值
+                # [FIX] 完整的异常兜底结构
                 quotes[sym] = {
                     "price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, 
                     "css": "dot-closed", "tag": "ERR"
@@ -289,30 +280,25 @@ def get_realtime_data():
         
         return quotes, fng, live_volatility, live, state_tag, state_css
     except: 
-        # [FIXED] 全局异常处理
+        # [FIX] 全局异常返回
         return None, 50, 0.01, None, "ERR", "dot-closed"
 
 # --- 6. 核心看板 ---
 @st.fragment(run_every=15)
 def show_live_dashboard():
     data_pack = get_realtime_data()
-    
-    # [FIXED] 检查数据包完整性
     if not data_pack or data_pack[0] is None: 
-        st.warning("📡 数据源连接失败，正在重试 (Initializing)...")
-        time.sleep(2)
-        st.rerun()
-        return
+        st.warning("📡 连接中 (Initializing)..."); time.sleep(1); st.rerun(); return
     
     quotes, fng_val, live_vol_btdr, df_chart_data, state_tag, state_css = data_pack
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
-    # [FIXED] 使用 .get() 方法，防止 KeyError
+    # [FIX] 使用默认值防止 KeyError
     btc = quotes.get('BTC-USD', {"price": 0, "pct": 0})
     qqq = quotes.get('QQQ', {"price": 0, "pct": 0})
     vix = quotes.get('^VIX', {"price": 0, "pct": 0})
     
-    # 确保 BTDR 字典完整
+    # [FIX] 确保 BTDR 包含所有必需字段
     btdr_default = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "css": "dot-closed", "tag": "N/A"}
     btdr = quotes.get('BTDR', btdr_default)
     
@@ -335,10 +321,10 @@ def show_live_dashboard():
     final_h_pct += (fng_val - 50) * 0.0005; final_l_pct += (fng_val - 50) * 0.0005
     p_high = prev * (1 + final_h_pct); p_low = prev * (1 + final_l_pct)
     
-    # --- UI RENDER (Centered Layout) ---
+    # --- UI RENDER ---
     st.markdown(f"""
     <div class="top-bar">
-        <div><span style="font-weight:bold; font-size:1rem;">BTDR PILOT v11.4</span> <span class="status-tag {state_css}">{state_tag}</span></div>
+        <div><span style="font-weight:bold; font-size:1rem;">BTDR PILOT v11.5</span> <span class="status-tag {state_css}">{state_tag}</span></div>
         <div>{now_ny.strftime('%H:%M:%S')} NY | 状态: {factors['regime']}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -353,7 +339,6 @@ def show_live_dashboard():
     st.caption("⚒️ 矿股板块 Top 5 (Correlation)")
     cols = st.columns(5)
     for i, p in enumerate(ai_model['top_peers']):
-        # [FIXED] 默认值填充
         d = quotes.get(p, {'pct': 0, 'price': 0, 'volume': 0})
         shares = MINER_SHARES.get(p, 200); tr = (d['volume'] / (shares*1000000))*100
         cols[i].markdown(miner_card_html(p, d['price'], d['pct'], tr), unsafe_allow_html=True)
@@ -361,12 +346,12 @@ def show_live_dashboard():
     
     # Row 3: Main Price
     c3, c4, c5 = st.columns(3)
-    # [FIXED] 从 btdr 字典中安全获取 css
-    status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
-    
+    # [FIX] 安全调用 CSS
+    btdr_css = btdr.get('css', 'dot-closed')
+    status_tag = f"<span class='status-dot {btdr_css}'></span> <span style='font-size:0.6rem; color:#999'>{btdr.get('tag','N/A')}</span>"
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
     
-    # [FIXED] 安全获取 open
+    # [FIX] 安全调用 Open
     open_p = btdr.get('open', 0)
     with c4: st.markdown(card_html("开盘价", f"${open_p:.2f}", None, 0), unsafe_allow_html=True)
     
@@ -422,11 +407,12 @@ def show_live_dashboard():
     st.markdown("---")
     st.markdown("### 🌍 宏观 & 微观 (Macro/Micro)")
     m1, m2, m3, m4 = st.columns(4)
-    with m1: st.markdown(factor_html("VIX", f"{vix['price']:.1f}", "Risk", 0), unsafe_allow_html=True)
-    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0), unsafe_allow_html=True)
-    with m3: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "Mom", 0), unsafe_allow_html=True)
+    # [FIX] 传递 tooltip_text=None，防止 TypeError
+    with m1: st.markdown(factor_html("VIX", f"{vix['price']:.1f}", "Risk", 0, None), unsafe_allow_html=True)
+    with m2: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, None), unsafe_allow_html=True)
+    with m3: st.markdown(factor_html("RSI (14d)", f"{factors['rsi']:.0f}", "Mom", 0, None), unsafe_allow_html=True)
     drift_val = (btc['pct']/100 * factors['beta_btc'] * 0.4)
-    with m4: st.markdown(factor_html("Exp. Drift", f"{drift_val*100:+.2f}%", "Day", drift_val), unsafe_allow_html=True)
+    with m4: st.markdown(factor_html("Exp. Drift", f"{drift_val*100:+.2f}%", "Day", drift_val, None), unsafe_allow_html=True)
 
     # Row 8: Sim Chart
     st.markdown("### ☁️ 概率推演 (Student-t)")
@@ -444,7 +430,7 @@ def show_live_dashboard():
     area = base.mark_area(opacity=0.2, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     st.altair_chart((area + l50).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v11.4 Stable | Mode: Centered Layout")
+    st.caption(f"Engine: v11.5 Hotfix | Mode: Centered Layout")
 
-st.markdown("### ⚡ BTDR 领航员 v11.4 Stable")
+st.markdown("### ⚡ BTDR 领航员 v11.5 Hotfix")
 show_live_dashboard()
