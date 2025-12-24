@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v12.0 Smart-Fill", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v10.6 User-Friendly", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -28,15 +28,24 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     
-    /* 核心卡片样式 */
+    /* Metric Card (v10.6 Updated for Tooltip) */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
+        position: relative; /* 关键：为了定位 tooltip */
+        transition: all 0.2s;
     }
+    /* 如果有 tooltip，鼠标变成问号 */
+    .metric-card.has-tooltip { cursor: help; }
+    .metric-card.has-tooltip:hover { border-color: #ced4da; }
     
-    /* 矿股卡片 */
+    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
+    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
+    
+    /* Miner Card */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -50,11 +59,7 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
-    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
-    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
-    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
-    
-    /* 因子卡片 */
+    /* Factor Box */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -66,6 +71,7 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
+    /* Tooltip Core (Shared) */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -82,8 +88,11 @@ CUSTOM_CSS = """
         border-width: 5px; border-style: solid;
         border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
+    
+    /* Activate Tooltips on Hover */
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     .signal-box:hover .tooltip-text { visibility: visible; opacity: 1; }
+    .metric-card:hover .tooltip-text { visibility: visible; opacity: 1; } /* v10.6 Added */
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
@@ -107,7 +116,39 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; width: 10%; }
     .bar-ai { background-color: #be4bdb; width: 50%; }
     
-    /* v12.0 Ticket CSS */
+    /* Sniper Signals */
+    .signal-box { 
+        border-radius: 8px; padding: 12px; margin-bottom: 15px; 
+        text-align: center; font-weight: bold; color: white; 
+        display: flex; flex-direction: column; justify-content: center; 
+        height: 100%; position: relative; cursor: help;
+    }
+    .sig-buy { background-color: #0ca678; box-shadow: 0 4px 12px rgba(12, 166, 120, 0.3); border: 1px solid #099268; }
+    .sig-sell { background-color: #e03131; box-shadow: 0 4px 12px rgba(224, 49, 49, 0.3); border: 1px solid #c92a2a; }
+    .sig-wait { background-color: #ced4da; color: #495057; border: 1px solid #adb5bd; }
+    .signal-label { font-size: 0.7rem; opacity: 0.9; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 1px; }
+    .signal-main { font-size: 1.3rem; line-height: 1.2; }
+    .signal-sub { font-size: 0.75rem; font-weight: normal; margin-top: 4px; opacity: 0.9; }
+
+    /* Strategy Cards */
+    .strategy-card {
+        border-radius: 8px; padding: 12px; margin-bottom: 10px;
+        text-align: left; position: relative; height: 100%;
+    }
+    .strat-long { background-color: #e6fcf5; border: 1px solid #63e6be; color: #087f5b; }
+    .strat-short { background-color: #fff5f5; border: 1px solid #ff8787; color: #c92a2a; }
+    
+    .strat-header { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between;}
+    .strat-row { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; align-items: center; }
+    .strat-label { opacity: 0.8; }
+    .strat-val { font-weight: 700; font-size: 1rem; }
+    .strat-rr { 
+        margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.1);
+        display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600;
+    }
+    .rr-good { color: #2f9e44; } 
+    .rr-bad { color: #e03131; }
+    
     .ticket-card {
         border-radius: 10px; padding: 15px; margin-bottom: 10px;
         text-align: left; position: relative; border-left: 5px solid #ccc;
@@ -125,12 +166,9 @@ CUSTOM_CSS = """
     .ticket-price-val { font-size: 1.6rem; font-weight: 900; color: #212529; letter-spacing: -0.5px; }
     
     .ticket-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin-top: 8px; color: #666; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 8px; }
-    
-    /* Prob Bar */
     .prob-container { width: 100%; height: 4px; background: #eee; margin-top: 5px; border-radius: 2px; }
     .prob-fill { height: 100%; border-radius: 2px; }
     .prob-high { background: #2f9e44; } .prob-med { background: #fab005; } .prob-low { background: #ced4da; }
-    
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
 </style>
 """
@@ -140,13 +178,25 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 3. 辅助函数 ---
-def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
+# --- 3. 辅助函数 (v10.6 升级支持 Tooltip) ---
+def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
     delta_html = ""
     if delta_str:
         color_class = "color-up" if delta_val >= 0 else "color-down"
         delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
-    return f"""<div class="metric-card"><div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
+    
+    # Tooltip 逻辑
+    tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
+    card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
+    
+    return f"""
+    <div class="{card_class}">
+        {tooltip_html}
+        <div class="metric-label">{label} {extra_tag}</div>
+        <div class="metric-value">{value_str}</div>
+        {delta_html}
+    </div>
+    """
 
 def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
     is_positive = delta_val >= 0
@@ -190,7 +240,6 @@ def run_grandmaster_analytics():
         
         if len(btdr) < 30: return default_model, default_factors, "Insufficient Data"
 
-        # Sector Correlation
         correlations = {}
         for m in MINER_POOL:
             if m in data:
@@ -202,7 +251,6 @@ def run_grandmaster_analytics():
         top_peers = sorted(correlations, key=correlations.get, reverse=True)[:5]
         default_model["top_peers"] = top_peers
 
-        # Factors
         ret_btdr = btdr['Close'].pct_change().fillna(0).values
         ret_btc = btc['Close'].pct_change().fillna(0).values
         ret_qqq = qqq['Close'].pct_change().fillna(0).values
@@ -236,7 +284,6 @@ def run_grandmaster_analytics():
 
         factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, "adx": adx, "regime": "Trend" if adx > 25 else "Chop", "rsi": rsi, "vol_base": vol_base, "atr_ratio": atr_ratio}
 
-        # WLS
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
         df_reg['High'] = btdr['High']; df_reg['Low'] = btdr['Low']
@@ -260,7 +307,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v12.0 Smart-Fill"
+        return final_model, factors, "v10.6 User-Friendly"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -332,24 +379,23 @@ def show_live_dashboard():
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
 
-    # Pre-calc
     dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
     drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     
-    # Status
     tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     regime_tag = factors['regime']; badge_class = "badge-trend" if regime_tag == "Trend" else "badge-chop"
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 状态: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     
-    # Cards
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (USD)", f"${btc['price']:,.0f}", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
-    with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
+    
+    # --- v10.6: 恐慌指数带 Tooltip ---
+    fng_tooltip = "0-24: 极度恐慌 (潜在买点)\n25-49: 恐慌\n50-74: 贪婪\n75-100: 极度贪婪 (风险较高)"
+    with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0, tooltip_text=fng_tooltip), unsafe_allow_html=True)
     
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    # Miner Peers
     st.caption("⚒️ 矿股板块 Beta (Correlation Top 5)")
     cols = st.columns(5)
     top_peers = ai_model.get("top_peers", ["MARA", "RIOT", "CLSK", "CORZ", "IREN"])
@@ -361,7 +407,6 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # BTDR Main
     c3, c4, c5 = st.columns(3)
     status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
@@ -370,12 +415,10 @@ def show_live_dashboard():
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- v12.0 Smart-Fill Logic ---
     current_gap_pct = ((btdr['price'] - btdr['prev']) / btdr['prev']) if btdr['price'] > 0 else ((btdr['open'] - btdr['prev']) / btdr['prev'])
     btc_pct_factor = btc['pct'] / 100; vol_state_factor = factors['atr_ratio'] 
     mh, ml = ai_model['high'], ai_model['low']
     
-    # Raw Ensemble
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
@@ -389,23 +432,17 @@ def show_live_dashboard():
     sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    # --- 🎯 Smart-Fill Execution (v12.0 Upgrade) ---
-    st.markdown("### ♟️ 智能挂单执行 (Smart-Fill Execution)")
-    
     curr_p = btdr['price']
-    atr_buffer = live_vol_btdr * 0.5 # 0.5倍实时ATR作为抢跑缓冲
+    atr_buffer = live_vol_btdr * 0.5 
     
-    # Buy Ticket Logic
-    buy_entry = p_low + atr_buffer # Smart Buy: 略高于预测低点，确保成交
-    buy_stop = buy_entry - (live_vol_btdr * 2.0) # Stop: 2倍ATR止损
-    buy_target = p_high - atr_buffer # Target: 略低于预测高点
+    buy_entry = p_low + atr_buffer
+    buy_stop = buy_entry - (live_vol_btdr * 2.0)
+    buy_target = p_high - atr_buffer
     buy_rr = (buy_target - buy_entry) / (buy_entry - buy_stop) if (buy_entry - buy_stop) > 0 else 0
-    # Prob calc: Z-score distance from current price to entry
-    z_buy = (curr_p - buy_entry) / (live_vol_btdr * 10) # Scaling factor 10 for visuals
-    buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5) # Heuristic probability
+    z_buy = (curr_p - buy_entry) / (live_vol_btdr * 10)
+    buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5)
     buy_prob_class = "prob-high" if buy_prob > 60 else ("prob-med" if buy_prob > 30 else "prob-low")
 
-    # Sell Ticket Logic
     sell_entry = p_high - atr_buffer
     sell_stop = sell_entry + (live_vol_btdr * 2.0)
     sell_target = p_low + atr_buffer
@@ -446,7 +483,6 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-    # Prediction Visual
     st.markdown("""<div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;"><span>🟦 Kalman (30%)</span><span>🟨 History (10%)</span><span>🟥 Momentum (10%)</span><span>🟪 AI Volatility (50%)</span></div><div class="ensemble-bar"><div class="bar-kalman"></div><div class="bar-hist"></div><div class="bar-mom"></div><div class="bar-ai"></div></div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
@@ -455,7 +491,6 @@ def show_live_dashboard():
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">理论支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
-    # Macro
     st.markdown("### 🌍 宏观环境 (Macro)")
     ma1, ma2, ma3, ma4 = st.columns(4)
     with ma1: st.markdown(factor_html("QQQ (纳指)", f"{qqq['pct']:+.2f}%", "Market", qqq['pct'], "科技股大盘风向标。"), unsafe_allow_html=True)
@@ -463,7 +498,6 @@ def show_live_dashboard():
     with ma3: st.markdown(factor_html("Beta (BTC)", f"{factors['beta_btc']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
     with ma4: st.markdown(factor_html("Beta (QQQ)", f"{factors['beta_qqq']:.2f}", "Kalman", 0, "动态 Beta"), unsafe_allow_html=True)
 
-    # Micro
     st.markdown("### 🔬 微观结构 (Micro)")
     mi1, mi2, mi3, mi4 = st.columns(4)
     rsi_val = factors['rsi']; rsi_status = "O/B" if rsi_val > 70 else ("O/S" if rsi_val < 30 else "Neu")
@@ -491,7 +525,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v12.0 Smart-Fill | Strategy: Front-Running Buffers")
+    st.caption(f"Engine: v10.6 User-Friendly | Signal: Hover for details")
 
-st.markdown("### ⚡ BTDR 领航员 v12.0 Smart-Fill")
+st.markdown("### ⚡ BTDR 领航员 v10.6 User-Friendly")
 show_live_dashboard()
