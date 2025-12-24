@@ -16,8 +16,8 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# --- 1. 页面配置 (回归 Centered 布局) ---
-st.set_page_config(page_title="BTDR Pilot v11.2 Safe", layout="centered")
+# --- 1. 页面配置 (保持原始布局) ---
+st.set_page_config(page_title="BTDR Pilot v11.3 Fixed", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -40,7 +40,7 @@ CUSTOM_CSS = """
 
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
 
-    /* 信号盒子 (优化版) */
+    /* 信号盒子 */
     .signal-box { 
         border-radius: 8px; padding: 15px; text-align: center; color: white; 
         height: 100%; display: flex; flex-direction: column; justify-content: center;
@@ -63,7 +63,7 @@ CUSTOM_CSS = """
     .plan-label { color: #888; }
     .plan-val { font-weight: 600; font-family: 'Roboto Mono', monospace; }
     
-    /* Tooltip 悬浮框 (修复定位) */
+    /* Tooltip 修复版 */
     .tooltip-text {
         visibility: hidden; width: 200px; background-color: rgba(33, 37, 41, 0.95);
         color: #fff !important; text-align: center; border-radius: 6px; padding: 8px;
@@ -102,6 +102,13 @@ CUSTOM_CSS = """
     
     .pred-container-wrapper { height: 110px; width: 100%; display: block; margin-top: 5px; }
     .pred-box { padding: 0 10px; border-radius: 12px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center; }
+    
+    .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px; }
+    .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }
+    .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; }
+    .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; }
+    .dot-night { background-color: #7048e8; box-shadow: 0 0 4px #7048e8; }
+    .dot-closed { background-color: #adb5bd; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -110,7 +117,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 3. 辅助函数 (强制单行 HTML) ---
+# --- 3. 辅助函数 (HTML修复：强制单行，解决乱码问题) ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
     delta_html = ""
     if delta_str:
@@ -120,6 +127,7 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", toolt
     tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
     card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
     
+    # 关键：全部写在一行，避免缩进导致 Markdown 解析错误
     return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
 def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
@@ -214,19 +222,19 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v11.2 Safe"
+        return final_model, factors, "v11.3 Stable"
     except Exception as e:
         return default_model, default_factors, "Offline"
 
-# --- 5. 实时数据 ---
+# --- 5. 实时数据 (修复 KeyError) ---
 def determine_market_state(now_ny):
     weekday = now_ny.weekday(); curr_min = now_ny.hour * 60 + now_ny.minute
-    if weekday == 5: return "Weekend", "tag-closed"
-    if weekday == 6 and now_ny.hour < 20: return "Weekend", "tag-closed"
-    if 240 <= curr_min < 570: return "Pre-Mkt", "tag-open"
-    if 570 <= curr_min < 960: return "Mkt Open", "tag-open"
-    if 960 <= curr_min < 1200: return "Post-Mkt", "tag-open"
-    return "Closed", "tag-closed"
+    if weekday == 5: return "Weekend", "dot-closed"
+    if weekday == 6 and now_ny.hour < 20: return "Weekend", "dot-closed"
+    if 240 <= curr_min < 570: return "Pre-Mkt", "dot-pre"
+    if 570 <= curr_min < 960: return "Mkt Open", "dot-reg"
+    if 960 <= curr_min < 1200: return "Post-Mkt", "dot-post"
+    return "Closed", "dot-closed"
 
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
@@ -260,14 +268,19 @@ def get_realtime_data():
                         if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
                 
                 pct = ((curr_price - prev_close)/prev_close)*100 if prev_close else 0
-                quotes[sym] = {"price": curr_price, "pct": pct, "prev": prev_close, "volume": curr_vol}
-            except: quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "volume": 0}
+                # 正常情况
+                quotes[sym] = {"price": curr_price, "pct": pct, "prev": prev_close, "volume": curr_vol, "css": state_css, "tag": state_tag}
+            except: 
+                # 异常情况 (KeyError 修复点：必须包含 css 和 tag)
+                quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "volume": 0, "css": "dot-closed", "tag": "ERR"}
             
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=0.8).json()['data'][0]['value'])
         except: fng = 50
         
         return quotes, fng, live_volatility, live, state_tag, state_css
-    except: return None, 50, 0.01, None, "ERR", "tag-closed"
+    except: 
+        # 全局异常修复
+        return None, 50, 0.01, None, "ERR", "dot-closed"
 
 # --- 6. 核心看板 ---
 @st.fragment(run_every=15)
@@ -299,10 +312,10 @@ def show_live_dashboard():
     final_h_pct += (fng_val - 50) * 0.0005; final_l_pct += (fng_val - 50) * 0.0005
     p_high = prev * (1 + final_h_pct); p_low = prev * (1 + final_l_pct)
     
-    # --- UI RENDER (Centered Layout) ---
+    # --- UI RENDER ---
     st.markdown(f"""
     <div class="top-bar">
-        <div><span style="font-weight:bold; font-size:1rem;">BTDR PILOT v11.2</span> <span class="status-tag {state_css}">{state_tag}</span></div>
+        <div><span style="font-weight:bold; font-size:1rem;">BTDR PILOT v11.3</span> <span class="status-tag {state_css}">{state_tag}</span></div>
         <div>{now_ny.strftime('%H:%M:%S')} NY | 状态: {factors['regime']}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -329,7 +342,7 @@ def show_live_dashboard():
     with c4: st.markdown(card_html("开盘价", f"${btdr['open']:.2f}", None, 0), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # Row 4: Interactive Chart (Plotly - Conditional Render)
+    # Row 4: Interactive Chart (Safe Mode)
     if PLOTLY_AVAILABLE and df_chart_data is not None and 'BTDR' in df_chart_data:
         df_plot = df_chart_data['BTDR'].dropna().tail(50)
         fig = go.Figure(data=[go.Candlestick(x=df_plot.index, open=df_plot['Open'], high=df_plot['High'], low=df_plot['Low'], close=df_plot['Close'], name='BTDR')])
@@ -337,6 +350,8 @@ def show_live_dashboard():
         fig.add_trace(go.Scatter(x=[df_plot.index[0], df_plot.index[-1]], y=[p_low, p_low], mode='lines', line=dict(color='green', width=1, dash='dash'), name='Support'))
         fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
+    elif not PLOTLY_AVAILABLE:
+        st.info("💡 提示：在 requirements.txt 中添加 plotly 可解锁 K 线图功能")
     
     # Row 5: Signal & Plan
     buy_entry = p_low + (live_vol_btdr * 0.5)
@@ -399,7 +414,7 @@ def show_live_dashboard():
     area = base.mark_area(opacity=0.2, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     st.altair_chart((area + l50).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v11.2 Safe | Mode: Centered Layout")
+    st.caption(f"Engine: v11.3 Stable | Mode: Centered Layout")
 
-st.markdown("### ⚡ BTDR 领航员 v11.2 Safe")
+st.markdown("### ⚡ BTDR 领航员 v11.3 Stable")
 show_live_dashboard()
