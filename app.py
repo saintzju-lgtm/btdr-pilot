@@ -68,7 +68,6 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
 
 # --- 3. 核心算法 (Grandmaster Analytics) ---
 def run_kalman_filter(y, x, delta=1e-4):
-    [cite_start]# [cite: 69-73] 卡尔曼滤波核心算法
     n = len(y); beta = np.zeros(n); P = np.zeros(n); beta[0]=1.0; P[0]=1.0; R=0.002;
     Q = delta/(1-delta)
     for t in range(1, n):
@@ -80,9 +79,9 @@ def run_kalman_filter(y, x, delta=1e-4):
         P[t] = (1 - K * x[t]) * P_pred
     return beta[-1]
 
-@st.cache_data(ttl=300) # 缓存5分钟，避免频繁计算
+@st.cache_data(ttl=300) # 缓存5分钟
 def run_grandmaster_analytics(miner_pool):
-    [cite_start]# [cite: 74-89] 回归模型逻辑
+    # 默认模型参数
     default_model = {
         "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
         "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
@@ -182,7 +181,6 @@ def run_grandmaster_analytics(miner_pool):
 # --- 4. 实时数据 (并行线程池) ---
 def fetch_single_ticker(ticker):
     try:
-        # 获取5天数据以确保包含上一个交易日
         data = yf.download(ticker, period="5d", interval="1m", progress=False, threads=False)
         return ticker, data
     except:
@@ -192,7 +190,6 @@ def get_parallel_realtime_data(miner_pool):
     tickers_list = ["BTDR", "BTC-USD", "QQQ", "^VIX"] + miner_pool
     quotes = {}
     
-    # 使用 ThreadPoolExecutor 并行请求
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = executor.map(fetch_single_ticker, tickers_list)
         
@@ -206,12 +203,11 @@ def get_parallel_realtime_data(miner_pool):
             continue
             
         df = raw_data[sym]
-        # 处理 yfinance MultiIndex 列名
         if isinstance(df.columns, pd.MultiIndex):
             try:
                 df = df.xs(sym, axis=1, level=1)
             except:
-                pass # 已经是单层或结构不同
+                pass
         
         if df.empty:
             quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "data": pd.DataFrame()}
@@ -219,18 +215,15 @@ def get_parallel_realtime_data(miner_pool):
 
         current_price = df['Close'].iloc[-1]
         
-        # 寻找昨日收盘价
         last_date = df.index[-1].date()
         if last_date < now_ny.date():
-            # 整个数据集都是以前的
             prev = df['Close'].iloc[-1]
         else:
-            # 包含今天，尝试找昨天
             mask = df.index.date < now_ny.date()
             if mask.any():
                 prev = df[mask]['Close'].iloc[-1]
             else:
-                prev = df['Open'].iloc[0] # 没有昨天数据，用今日开盘代替
+                prev = df['Open'].iloc[0]
         
         pct = ((current_price - prev) / prev * 100) if prev > 0 else 0
         quotes[sym] = {
@@ -246,14 +239,12 @@ def get_parallel_realtime_data(miner_pool):
         
     return quotes, fng
 
-# --- 5. 仪表盘 Fragment (修复版) ---
-# 注意：不在此处调用 st.sidebar
+# --- 5. 仪表盘 Fragment ---
 @st.fragment(run_every=15)
 def show_live_dashboard(shares, risk_tol, selected_miners):
     # 1. 获取数据
     quotes, fng_val = get_parallel_realtime_data(selected_miners)
     
-    # 错误处理：防崩
     if quotes['BTDR']['price'] == 0:
         st.warning("⚠️ 数据源连接不稳定，3秒后重试...")
         time.sleep(3) 
@@ -275,23 +266,19 @@ def show_live_dashboard(shares, risk_tol, selected_miners):
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # 实时波动率
     live_df = btdr['data']
     live_vol_btdr = live_df['Close'].std() if len(live_df) > 10 else (btdr['price'] * 0.01)
     if np.isnan(live_vol_btdr) or live_vol_btdr == 0: live_vol_btdr = btdr['price'] * 0.01
     live_vol_pct = live_vol_btdr / btdr['price']
     
-    # 综合权重
     w_kalman, w_hist, w_mom, w_ai = 0.3, 0.1, 0.1, 0.5
     final_h_ret = (w_kalman * pred_h_kalman) + (w_hist * ai_model['ensemble_hist_h']) + (w_mom * ai_model['ensemble_mom_h']) + (w_ai * (2.5 * live_vol_pct))
     final_l_ret = (w_kalman * pred_l_kalman) + (w_hist * ai_model['ensemble_hist_l']) + (w_mom * ai_model['ensemble_mom_l']) + (w_ai * (-2.5 * live_vol_pct))
     
-    # 情绪修正
     sentiment_adj = (fng_val - 50) * 0.0005
     p_high = btdr['prev'] * (1 + final_h_ret + sentiment_adj)
     p_low = btdr['prev'] * (1 + final_l_ret + sentiment_adj)
     
-    # 交易点位
     atr_buffer = live_vol_btdr * 0.5
     buy_entry = p_low + atr_buffer
     buy_stop = buy_entry - (live_vol_btdr * risk_tol)
@@ -316,20 +303,17 @@ def show_live_dashboard(shares, risk_tol, selected_miners):
 
     st.markdown("---")
     
-    # Chart & Tickets Layout
     col_chart, col_tickets = st.columns([2, 1])
     
     with col_chart:
         if not btdr['data'].empty:
             df_plot = btdr['data'].copy()
-            # 简单抽样防止卡顿
             if len(df_plot) > 300: df_plot = df_plot.iloc[::2]
             
             fig = go.Figure(data=[go.Candlestick(x=df_plot.index,
                             open=df_plot['Open'], high=df_plot['High'],
                             low=df_plot['Low'], close=df_plot['Close'], name="BTDR")])
             
-            # 绘制关键线
             fig.add_hline(y=buy_entry, line_dash="dot", line_color="green", annotation_text="Buy Entry")
             fig.add_hline(y=sell_entry, line_dash="dot", line_color="red", annotation_text="Sell Entry")
             fig.add_hline(y=p_high, line_color="rgba(255, 0, 0, 0.3)", annotation_text="High Target")
@@ -341,7 +325,6 @@ def show_live_dashboard(shares, risk_tol, selected_miners):
             st.info("图表数据加载中...")
 
     with col_tickets:
-        # Buy Ticket
         rr_buy = (buy_target - buy_entry) / (buy_entry - buy_stop) if (buy_entry - buy_stop) > 0 else 0
         z_buy = (btdr['price'] - buy_entry) / (live_vol_btdr * 10)
         buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5)
@@ -356,7 +339,6 @@ def show_live_dashboard(shares, risk_tol, selected_miners):
         </div>
         """, unsafe_allow_html=True)
         
-        # Sell Ticket
         rr_sell = (sell_entry - sell_target) / (sell_stop - sell_entry) if (sell_stop - sell_entry) > 0 else 0
         st.markdown(f"""
         <div class="ticket-card ticket-sell">
@@ -377,7 +359,6 @@ def show_live_dashboard(shares, risk_tol, selected_miners):
 
 # --- 主入口 ---
 if __name__ == "__main__":
-    # 侧边栏必须在主线程渲染，不能在 Fragment 内部
     with st.sidebar:
         st.header("⚙️ Pilot Config")
         shares = st.number_input("持有股数 (BTDR)", value=2000, step=100)
@@ -386,5 +367,4 @@ if __name__ == "__main__":
         default_miners = ["MARA", "RIOT", "CLSK", "CORZ", "IREN", "WULF", "CIFR", "HUT"]
         selected_miners = st.multiselect("关注矿股 (Peers)", default_miners, default=default_miners)
     
-    # 传递参数给 Fragment
     show_live_dashboard(shares, risk_tol, selected_miners)
