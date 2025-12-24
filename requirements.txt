@@ -11,3 +11,4 @@ altair
 scipy
 plotly
 arch
+matplotlib
