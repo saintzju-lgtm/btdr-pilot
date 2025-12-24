@@ -9,14 +9,14 @@ from datetime import datetime, time as dt_time
 import pytz
 from scipy.stats import norm
 
-# --- 0. 防崩溃导入 ---
+# --- 0. 防崩溃导入 (Safe Import) ---
 try:
     import plotly.graph_objects as go
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-# --- 1. 页面配置 ---
+# --- 1. 页面配置 (保持原始布局) ---
 st.set_page_config(page_title="BTDR Pilot v11.4 Stable", layout="centered")
 
 CUSTOM_CSS = """
@@ -117,7 +117,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 3. 辅助函数 ---
+# --- 3. 辅助函数 (HTML修复：强制单行，解决乱码问题) ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
     delta_html = ""
     if delta_str:
@@ -127,6 +127,7 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", toolt
     tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
     card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
     
+    # 关键：全部写在一行，避免缩进导致 Markdown 解析错误
     return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
 def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
@@ -139,7 +140,7 @@ def miner_card_html(sym, price, pct, turnover):
     color_class = "color-up" if pct >= 0 else "color-down"
     return f"""<div class="miner-card"><div class="miner-sym">{sym}</div><div class="miner-price ${color_class}">${price:.2f}</div><div class="miner-sub"><span class="{color_class}">{pct:+.1f}%</span> | 换{turnover:.1f}%</div></div>"""
 
-# --- 4. 核心计算 ---
+# --- 4. 核心计算 (Kalman + WLS) ---
 def run_kalman_filter(y, x, delta=1e-4):
     n = len(y); beta = np.zeros(n); P = np.zeros(n); beta[0]=1.0; P[0]=1.0; R=0.002; Q=delta/(1-delta)
     for t in range(1, n):
@@ -163,6 +164,7 @@ def run_grandmaster_analytics():
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
         
+        # Correlations
         correlations = {}
         for m in MINER_POOL:
             if m in data:
@@ -172,6 +174,7 @@ def run_grandmaster_analytics():
                 else: correlations[m] = 0
         top_peers = sorted(correlations, key=correlations.get, reverse=True)[:5]
 
+        # Factors
         ret_btdr = btdr['Close'].pct_change().fillna(0).values
         ret_btc = btc['Close'].pct_change().fillna(0).values
         ret_qqq = qqq['Close'].pct_change().fillna(0).values
@@ -195,6 +198,7 @@ def run_grandmaster_analytics():
 
         factors = {"beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, "adx": 25, "regime": "Trend", "rsi": rsi, "vol_base": vol_base, "atr_ratio": atr_ratio, "avg_vol": avg_vol_5d}
 
+        # WLS
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
         df_reg['High'] = btdr['High']; df_reg['Low'] = btdr['Low']
@@ -222,7 +226,7 @@ def run_grandmaster_analytics():
     except Exception as e:
         return default_model, default_factors, "Offline"
 
-# --- 5. 实时数据 (修复版：补全了所有兜底字段) ---
+# --- 5. 实时数据 (彻底修复 KeyError: 必须包含所有 UI 字段) ---
 def determine_market_state(now_ny):
     weekday = now_ny.weekday(); curr_min = now_ny.hour * 60 + now_ny.minute
     if weekday == 5: return "Weekend", "dot-closed"
@@ -267,25 +271,33 @@ def get_realtime_data():
                     else: prev_close = df_day['Close'].iloc[-1]; open_price = prev_close
                 
                 pct = ((curr_price - prev_close)/prev_close)*100 if prev_close else 0
-                # 正常返回
-                quotes[sym] = {"price": curr_price, "pct": pct, "prev": prev_close, "volume": curr_vol, "open": open_price, "css": state_css, "tag": state_tag}
+                
+                # [FIXED] 必须包含所有 UI 渲染需要的 key
+                quotes[sym] = {
+                    "price": curr_price, "pct": pct, "prev": prev_close, 
+                    "open": open_price, "volume": curr_vol, "css": state_css, "tag": state_tag
+                }
             except: 
-                # 异常兜底 (关键修复：补全所有字段)
-                quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "css": "dot-closed", "tag": "ERR"}
+                # [FIXED] 异常时也要提供默认值
+                quotes[sym] = {
+                    "price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, 
+                    "css": "dot-closed", "tag": "ERR"
+                }
             
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=0.8).json()['data'][0]['value'])
         except: fng = 50
         
         return quotes, fng, live_volatility, live, state_tag, state_css
     except: 
-        # 全局崩溃兜底
+        # [FIXED] 全局异常处理
         return None, 50, 0.01, None, "ERR", "dot-closed"
 
 # --- 6. 核心看板 ---
 @st.fragment(run_every=15)
 def show_live_dashboard():
     data_pack = get_realtime_data()
-    # 彻底修复：如果 data_pack 为空，不要继续执行
+    
+    # [FIXED] 检查数据包完整性
     if not data_pack or data_pack[0] is None: 
         st.warning("📡 数据源连接失败，正在重试 (Initializing)...")
         time.sleep(2)
@@ -295,11 +307,14 @@ def show_live_dashboard():
     quotes, fng_val, live_vol_btdr, df_chart_data, state_tag, state_css = data_pack
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
-    # 修复：使用 .get() 方法，防止 KeyError
+    # [FIXED] 使用 .get() 方法，防止 KeyError
     btc = quotes.get('BTC-USD', {"price": 0, "pct": 0})
     qqq = quotes.get('QQQ', {"price": 0, "pct": 0})
     vix = quotes.get('^VIX', {"price": 0, "pct": 0})
-    btdr = quotes.get('BTDR', {"price": 0, "pct": 0, "prev": 1, "open": 0, "css": "dot-closed"})
+    
+    # 确保 BTDR 字典完整
+    btdr_default = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "css": "dot-closed", "tag": "N/A"}
+    btdr = quotes.get('BTDR', btdr_default)
     
     tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny)
     
@@ -338,19 +353,23 @@ def show_live_dashboard():
     st.caption("⚒️ 矿股板块 Top 5 (Correlation)")
     cols = st.columns(5)
     for i, p in enumerate(ai_model['top_peers']):
+        # [FIXED] 默认值填充
         d = quotes.get(p, {'pct': 0, 'price': 0, 'volume': 0})
         shares = MINER_SHARES.get(p, 200); tr = (d['volume'] / (shares*1000000))*100
         cols[i].markdown(miner_card_html(p, d['price'], d['pct'], tr), unsafe_allow_html=True)
     st.markdown("---")
     
-    # Row 3: Main Price (修复 KeyError 关键点)
+    # Row 3: Main Price
     c3, c4, c5 = st.columns(3)
-    # 使用 .get 安全获取 css 属性
-    btdr_css = btdr.get('css', 'dot-closed')
-    status_tag = f"<span class='status-dot {btdr_css}'></span> <span style='font-size:0.6rem; color:#999'>{btdr.get('tag', 'N/A')}</span>"
+    # [FIXED] 从 btdr 字典中安全获取 css
+    status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
-    with c4: st.markdown(card_html("开盘价", f"${btdr['open']:.2f}", None, 0), unsafe_allow_html=True)
+    
+    # [FIXED] 安全获取 open
+    open_p = btdr.get('open', 0)
+    with c4: st.markdown(card_html("开盘价", f"${open_p:.2f}", None, 0), unsafe_allow_html=True)
+    
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
     # Row 4: Interactive Chart
@@ -361,12 +380,14 @@ def show_live_dashboard():
         fig.add_trace(go.Scatter(x=[df_plot.index[0], df_plot.index[-1]], y=[p_low, p_low], mode='lines', line=dict(color='green', width=1, dash='dash'), name='Support'))
         fig.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
+    elif not PLOTLY_AVAILABLE:
+        st.info("💡 提示：在 requirements.txt 中添加 plotly 可解锁 K 线图功能")
     
     # Row 5: Signal & Plan
     buy_entry = p_low + (live_vol_btdr * 0.5)
     buy_stop = buy_entry - (live_vol_btdr * 2.0); buy_target = p_high - (live_vol_btdr * 0.5)
     
-    dist_low = (curr_p - p_low)/curr_p
+    dist_low = (curr_p - p_low)/curr_p if curr_p > 0 else 0
     if dist_low < 0.01: sig_title="STRONG BUY"; sig_css="sig-buy"; sig_sub="触及支撑"
     elif curr_p > p_high * 0.99: sig_title="STRONG SELL"; sig_css="sig-sell"; sig_sub="触及阻力"
     else: sig_title="WAIT / WATCH"; sig_css="sig-wait"; sig_sub="区间震荡"
