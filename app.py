@@ -5,11 +5,12 @@ import numpy as np
 import time
 import requests
 import altair as alt
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time
 import pytz
+from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v11.0 AI-Adaptive", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v12.0 Smart-Fill", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -27,16 +28,15 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     
+    /* 核心卡片样式 */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
     }
-    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
-    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
-    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
+    /* 矿股卡片 */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -50,6 +50,11 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
+    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
+    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
+    
+    /* 因子卡片 */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -95,7 +100,6 @@ CUSTOM_CSS = """
     .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
     .badge-trend { background:#fd7e14; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
     .badge-chop { background:#868e96; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; }
-    .badge-ai { background:#7950f2; color:white; padding:1px 4px; border-radius:3px; font-size:0.6rem; font-weight:bold; }
     
     .ensemble-bar { height: 4px; width: 100%; display: flex; margin-top: 4px; border-radius: 2px; overflow: hidden; }
     .bar-kalman { background-color: #228be6; width: 30%; }
@@ -103,38 +107,31 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; width: 10%; }
     .bar-ai { background-color: #be4bdb; width: 50%; }
     
-    /* Sniper Signals */
-    .signal-box { 
-        border-radius: 8px; padding: 12px; margin-bottom: 15px; 
-        text-align: center; font-weight: bold; color: white; 
-        display: flex; flex-direction: column; justify-content: center; 
-        height: 100%; position: relative; cursor: help;
+    /* v12.0 Ticket CSS */
+    .ticket-card {
+        border-radius: 10px; padding: 15px; margin-bottom: 10px;
+        text-align: left; position: relative; border-left: 5px solid #ccc;
+        background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
     }
-    .sig-buy { background-color: #0ca678; box-shadow: 0 4px 12px rgba(12, 166, 120, 0.3); border: 1px solid #099268; }
-    .sig-sell { background-color: #e03131; box-shadow: 0 4px 12px rgba(224, 49, 49, 0.3); border: 1px solid #c92a2a; }
-    .sig-wait { background-color: #ced4da; color: #495057; border: 1px solid #adb5bd; }
-    .signal-label { font-size: 0.7rem; opacity: 0.9; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 1px; }
-    .signal-main { font-size: 1.3rem; line-height: 1.2; }
-    .signal-sub { font-size: 0.75rem; font-weight: normal; margin-top: 4px; opacity: 0.9; }
-
-    /* Strategy Cards */
-    .strategy-card {
-        border-radius: 8px; padding: 12px; margin-bottom: 10px;
-        text-align: left; position: relative; height: 100%;
-    }
-    .strat-long { background-color: #e6fcf5; border: 1px solid #63e6be; color: #087f5b; }
-    .strat-short { background-color: #fff5f5; border: 1px solid #ff8787; color: #c92a2a; }
+    .ticket-buy { border-left-color: #0ca678; background: #f0fff4; }
+    .ticket-sell { border-left-color: #e03131; background: #fff5f5; }
     
-    .strat-header { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; display: flex; justify-content: space-between;}
-    .strat-row { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; align-items: center; }
-    .strat-label { opacity: 0.8; }
-    .strat-val { font-weight: 700; font-size: 1rem; }
-    .strat-rr { 
-        margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,0.1);
-        display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600;
+    .ticket-header { 
+        font-size: 0.9rem; font-weight: 800; letter-spacing: 0.5px; 
+        text-transform: uppercase; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;
     }
-    .rr-good { color: #2f9e44; } 
-    .rr-bad { color: #e03131; }
+    .ticket-price-row { display: flex; align-items: baseline; margin-bottom: 8px; }
+    .ticket-price-label { font-size: 0.8rem; color: #555; width: 80px; }
+    .ticket-price-val { font-size: 1.6rem; font-weight: 900; color: #212529; letter-spacing: -0.5px; }
+    
+    .ticket-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin-top: 8px; color: #666; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 8px; }
+    
+    /* Prob Bar */
+    .prob-container { width: 100%; height: 4px; background: #eee; margin-top: 5px; border-radius: 2px; }
+    .prob-fill { height: 100%; border-radius: 2px; }
+    .prob-high { background: #2f9e44; } .prob-med { background: #fab005; } .prob-low { background: #ced4da; }
+    
+    .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -263,7 +260,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v11.0 AI-Adaptive"
+        return final_model, factors, "v12.0 Smart-Fill"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -287,9 +284,6 @@ def get_realtime_data():
         
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
-        
-        # --- 关键升级：计算分钟级波动率 ---
-        # 默认值
         live_volatility = 0.01 
         
         for sym in symbols:
@@ -301,14 +295,8 @@ def get_realtime_data():
                 if not df_min.empty: 
                     current_price = df_min['Close'].iloc[-1]
                     if 'Volume' in df_min.columns: current_volume = df_min['Volume'].sum()
-                    
-                    # 捕获 BTDR 的实时波动率
                     if sym == 'BTDR' and len(df_min) > 10:
-                        # 计算最近 60 分钟的标准差作为日内波动率参考
-                        # 为了使其与日线对齐，我们需要适度放大（分钟级波动远小于日级）
-                        # 简单的启发式算法：Min_Std * sqrt(Trading_Minutes_Left)
                         recent_min_std = df_min['Close'].tail(60).std()
-                        # 如果 std 是 nan 或者 0
                         if np.isnan(recent_min_std) or recent_min_std == 0: recent_min_std = current_price * 0.005 
                         live_volatility = recent_min_std
                         
@@ -382,123 +370,79 @@ def show_live_dashboard():
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- v11.0 AI Adaptive Prediction ---
-    
-    # 1. Base Variables
+    # --- v12.0 Smart-Fill Logic ---
     current_gap_pct = ((btdr['price'] - btdr['prev']) / btdr['prev']) if btdr['price'] > 0 else ((btdr['open'] - btdr['prev']) / btdr['prev'])
     btc_pct_factor = btc['pct'] / 100; vol_state_factor = factors['atr_ratio'] 
     mh, ml = ai_model['high'], ai_model['low']
     
-    # 2. Raw Models
+    # Raw Ensemble
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # 3. AI Adjustment Logic
-    # 逻辑：如果实时的 live_vol_btdr (60分钟标准差) 很小，说明今日是窄幅震荡，我们强行压缩范围
-    # 转换 live_vol_btdr 为百分比
     live_vol_pct = live_vol_btdr / btdr['price'] if btdr['price'] > 0 else 0.01
-    
-    # 计算“AI 上限”和“AI 下限”：基于当前价格 +/- 2倍的实时波动率
-    # 这是一个非常敏感的日内区间
     ai_upper_bound_pct = (btdr['price'] * (1 + 2.5 * live_vol_pct) - btdr['prev']) / btdr['prev']
     ai_lower_bound_pct = (btdr['price'] * (1 - 2.5 * live_vol_pct) - btdr['prev']) / btdr['prev']
     
-    # 4. Ensemble Weights (v11.0: 引入 50% 的 AI 权重)
-    # 降低历史数据的权重，大幅提高 AI 实时数据的权重
-    w_kalman = 0.3
-    w_hist = 0.1
-    w_mom = 0.1
-    w_ai = 0.5 # 50% 权重给实时AI波动
-    
+    w_kalman = 0.3; w_hist = 0.1; w_mom = 0.1; w_ai = 0.5 
     final_h_ret = (w_kalman * pred_h_kalman) + (w_hist * ai_model['ensemble_hist_h']) + (w_mom * ai_model['ensemble_mom_h']) + (w_ai * ai_upper_bound_pct)
     final_l_ret = (w_kalman * pred_l_kalman) + (w_hist * ai_model['ensemble_hist_l']) + (w_mom * ai_model['ensemble_mom_l']) + (w_ai * ai_lower_bound_pct)
-    
-    # 5. Time Decay Funnel (时间越晚，范围越小)
-    # 计算距离收盘还有多少分钟 (收盘 16:00, 也就是 960 minutes form midnight)
-    now_min = datetime.now(pytz.timezone('America/New_York')).hour * 60 + datetime.now(pytz.timezone('America/New_York')).minute
-    min_to_close = max(960 - now_min, 0)
-    # 如果还在盘前(4:00 - 9:30)，decay factor = 1.0 (不衰减)
-    # 如果在盘中，开始衰减
-    decay_factor = 1.0
-    if 570 <= now_min <= 960:
-        # 简单的线性衰减，但保留至少 30% 的基础波动空间，防止变成一条直线
-        decay_factor = 0.3 + 0.7 * (min_to_close / 390) 
-        # 应用衰减：让 High 和 Low 向 Current Price 收敛
-        # 注意：这步比较激进，只在盘中启用
-        # 简化版：仅对 AI 部分做衰减
-    
-    sentiment_adj = (fng_val - 50) * 0.0005
-    final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
-    
-    p_high = btdr['prev'] * (1 + final_h_ret)
-    p_low = btdr['prev'] * (1 + final_l_ret)
+    sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
+    p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    # --- 🚦 组合策略面板 (Signals + Plan) ---
-    st.markdown("### ♟️ 狙击手信号 & 交易计划 (AI-Adaptive)")
+    # --- 🎯 Smart-Fill Execution (v12.0 Upgrade) ---
+    st.markdown("### ♟️ 智能挂单执行 (Smart-Fill Execution)")
     
     curr_p = btdr['price']
+    atr_buffer = live_vol_btdr * 0.5 # 0.5倍实时ATR作为抢跑缓冲
     
-    # 1. Signal
-    signal_txt = "WAIT / HOLD"; signal_css = "sig-wait"; sub_txt = "等待方向确认"
-    tooltip_msg = "当前价格处于中间区域，多空博弈不明朗，建议观望等待。"
-    
-    if curr_p <= p_low * 1.01:
-        if factors['rsi'] < 35: signal_txt = "STRONG BUY"; signal_css = "sig-buy"; sub_txt = "AI超卖 + 支撑确认"; tooltip_msg = "【强力买入理由】\n1. 价格跌破AI预测低点\n2. RSI指标进入超卖区(<35)\n3. 盈亏比极佳"
-        else: signal_txt = "BUY ZONE"; signal_css = "sig-buy"; sub_txt = "接近AI支撑位"; tooltip_msg = "【买入区域】\n价格已接近模型预测的日内低点，可尝试左侧挂单建仓。"
-    elif curr_p >= p_high * 0.99:
-        if factors['rsi'] > 65: signal_txt = "STRONG SELL"; signal_css = "sig-sell"; sub_txt = "AI超买 + 阻力确认"; tooltip_msg = "【强力卖出理由】\n1. 价格触及AI预测高点\n2. RSI指标进入超买区(>65)\n3. 短期回调风险大"
-        else: signal_txt = "SELL ZONE"; signal_css = "sig-sell"; sub_txt = "接近AI阻力位"; tooltip_msg = "【卖出区域】\n价格已接近模型预测的日内高点，建议分批止盈或做空。"
-    else:
-        # 计算距离
-        dist_to_low = ((curr_p - p_low) / curr_p) * 100
-        dist_to_high = ((p_high - curr_p) / curr_p) * 100
-        if dist_to_low < 1.0: signal_txt = "WATCH BUY"; sub_txt = "关注低吸机会"; tooltip_msg = "价格正在向支撑位靠拢，请密切关注 RSI 指标是否企稳。"
-        elif dist_to_high < 1.0: signal_txt = "WATCH SELL"; sub_txt = "关注止盈机会"; tooltip_msg = "价格正在向阻力位靠拢，若动能不足可能回落。"
+    # Buy Ticket Logic
+    buy_entry = p_low + atr_buffer # Smart Buy: 略高于预测低点，确保成交
+    buy_stop = buy_entry - (live_vol_btdr * 2.0) # Stop: 2倍ATR止损
+    buy_target = p_high - atr_buffer # Target: 略低于预测高点
+    buy_rr = (buy_target - buy_entry) / (buy_entry - buy_stop) if (buy_entry - buy_stop) > 0 else 0
+    # Prob calc: Z-score distance from current price to entry
+    z_buy = (curr_p - buy_entry) / (live_vol_btdr * 10) # Scaling factor 10 for visuals
+    buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5) # Heuristic probability
+    buy_prob_class = "prob-high" if buy_prob > 60 else ("prob-med" if buy_prob > 30 else "prob-low")
 
-    # 2. Strategy Levels (AI Adjusted)
-    # AI 波动率更敏感，止损位设置更紧凑
-    vol_price = live_vol_btdr * 2 # 使用实时分钟级波动作为风控基准
-    
-    buy_limit = p_low
-    buy_stop = p_low - vol_price
-    buy_target = p_high
-    rr_long = (buy_target - buy_limit) / (buy_limit - buy_stop) if (buy_limit - buy_stop) > 0 else 0
-    rr_long_class = "rr-good" if rr_long >= 2 else ("rr-bad" if rr_long < 1 else "")
-    
-    sell_limit = p_high
-    sell_stop = p_high + vol_price
-    sell_target = p_low
-    rr_short = (sell_limit - sell_target) / (sell_stop - sell_limit) if (sell_stop - sell_limit) > 0 else 0
-    rr_short_class = "rr-good" if rr_short >= 2 else ("rr-bad" if rr_short < 1 else "")
+    # Sell Ticket Logic
+    sell_entry = p_high - atr_buffer
+    sell_stop = sell_entry + (live_vol_btdr * 2.0)
+    sell_target = p_low + atr_buffer
+    sell_rr = (sell_entry - sell_target) / (sell_stop - sell_entry) if (sell_stop - sell_entry) > 0 else 0
+    z_sell = (sell_entry - curr_p) / (live_vol_btdr * 10)
+    sell_prob = max(min((1 - norm.cdf(z_sell)) * 100 * 2, 95), 5)
+    sell_prob_class = "prob-high" if sell_prob > 60 else ("prob-med" if sell_prob > 30 else "prob-low")
 
-    cmd1, cmd2, cmd3 = st.columns([1.2, 1.4, 1.4])
-    with cmd1:
+    tick1, tick2 = st.columns(2)
+    
+    with tick1:
         st.markdown(f"""
-        <div class="signal-box {signal_css}">
-            <div class="tooltip-text">{tooltip_msg}</div>
-            <div class="signal-label">AI SIGNAL</div>
-            <div class="signal-main">{signal_txt}</div>
-            <div class="signal-sub">{sub_txt}</div>
+        <div class="ticket-card ticket-buy">
+            <div class="ticket-header" style="color:#0ca678;">🟢 BUY LIMIT <span class="tag-smart">SMART</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${buy_entry:.2f}</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${buy_stop:.2f}</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${buy_target:.2f}</span></div>
+            <div class="ticket-meta">
+                <span>R/R: <b>1:{buy_rr:.1f}</b></span>
+                <span>成交概率: <b>{buy_prob:.0f}%</b></span>
+            </div>
+            <div class="prob-container"><div class="prob-fill {buy_prob_class}" style="width:{buy_prob}%"></div></div>
         </div>
         """, unsafe_allow_html=True)
-    with cmd2:
+        
+    with tick2:
         st.markdown(f"""
-        <div class="strategy-card strat-long">
-            <div class="strat-header">🟢 做多计划 (AI-LONG)</div>
-            <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${buy_limit:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${buy_target:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${buy_stop:.2f}</span></div>
-            <div class="strat-rr">盈亏比 (R/R): <span class="{rr_long_class}">1 : {rr_long:.2f}</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-    with cmd3:
-        st.markdown(f"""
-        <div class="strategy-card strat-short">
-            <div class="strat-header">🔴 做空/止盈 (AI-SHORT)</div>
-            <div class="strat-row"><span class="strat-label">挂单 (Entry)</span><span class="strat-val">${sell_limit:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">目标 (Target)</span><span class="strat-val">${sell_target:.2f}</span></div>
-            <div class="strat-row"><span class="strat-label">止损 (Stop)</span><span class="strat-val" style="color:#c92a2a">${sell_stop:.2f}</span></div>
-            <div class="strat-rr">盈亏比 (R/R): <span class="{rr_short_class}">1 : {rr_short:.2f}</span></div>
+        <div class="ticket-card ticket-sell">
+            <div class="ticket-header" style="color:#e03131;">🔴 SELL LIMIT <span class="tag-smart">SMART</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${sell_entry:.2f}</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${sell_stop:.2f}</span></div>
+            <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${sell_target:.2f}</span></div>
+            <div class="ticket-meta">
+                <span>R/R: <b>1:{sell_rr:.1f}</b></span>
+                <span>成交概率: <b>{sell_prob:.0f}%</b></span>
+            </div>
+            <div class="prob-container"><div class="prob-fill {sell_prob_class}" style="width:{sell_prob}%"></div></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -507,8 +451,8 @@ def show_live_dashboard():
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > p_low else "#ffffff"
-    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">阻力区间 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
-    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">支撑区间 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
+    with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">理论阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
+    with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">理论支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_low:.2f}</div></div></div>""", unsafe_allow_html=True)
 
     st.markdown("---")
     # Macro
@@ -547,7 +491,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v11.0 AI-Adaptive | Volatility: Real-time Minute Sampling")
+    st.caption(f"Engine: v12.0 Smart-Fill | Strategy: Front-Running Buffers")
 
-st.markdown("### ⚡ BTDR 领航员 v11.0 AI-Adaptive")
+st.markdown("### ⚡ BTDR 领航员 v12.0 Smart-Fill")
 show_live_dashboard()
