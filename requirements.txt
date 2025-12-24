@@ -10,11 +10,4 @@ requests
 altair
 scipy
 plotly
-streamlit
-yfinance
-pandas
-numpy
-requests
-altair
-scipy
-plotly
+arch
