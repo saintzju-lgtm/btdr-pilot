@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v10.6 User-Friendly", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v10.7 Stable", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -28,16 +28,14 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa;
     }
     
-    /* Metric Card (v10.6 Updated for Tooltip) */
+    /* Metric Card */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
         display: flex; flex-direction: column; justify-content: center;
-        position: relative; /* 关键：为了定位 tooltip */
-        transition: all 0.2s;
+        position: relative; transition: all 0.2s;
     }
-    /* 如果有 tooltip，鼠标变成问号 */
     .metric-card.has-tooltip { cursor: help; }
     .metric-card.has-tooltip:hover { border-color: #ced4da; }
     
@@ -71,7 +69,7 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    /* Tooltip Core (Shared) */
+    /* Tooltip Core */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -89,10 +87,9 @@ CUSTOM_CSS = """
         border-color: rgba(33, 37, 41, 0.95) transparent transparent transparent;
     }
     
-    /* Activate Tooltips on Hover */
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     .signal-box:hover .tooltip-text { visibility: visible; opacity: 1; }
-    .metric-card:hover .tooltip-text { visibility: visible; opacity: 1; } /* v10.6 Added */
+    .metric-card:hover .tooltip-text { visibility: visible; opacity: 1; }
     
     .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
     
@@ -178,25 +175,18 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 3. 辅助函数 (v10.6 升级支持 Tooltip) ---
+# --- 3. 辅助函数 (修复：移除多行字符串缩进，防止被识别为代码块) ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
     delta_html = ""
     if delta_str:
         color_class = "color-up" if delta_val >= 0 else "color-down"
         delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     
-    # Tooltip 逻辑
     tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
     card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
     
-    return f"""
-    <div class="{card_class}">
-        {tooltip_html}
-        <div class="metric-label">{label} {extra_tag}</div>
-        <div class="metric-value">{value_str}</div>
-        {delta_html}
-    </div>
-    """
+    # 关键修复：单行返回 HTML，避免 Streamlit 误判为代码块
+    return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
 
 def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
     is_positive = delta_val >= 0
@@ -307,7 +297,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v10.6 User-Friendly"
+        return final_model, factors, "v10.7 Stable"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -390,7 +380,6 @@ def show_live_dashboard():
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (USD)", f"${btc['price']:,.0f}", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
     
-    # --- v10.6: 恐慌指数带 Tooltip ---
     fng_tooltip = "0-24: 极度恐慌 (潜在买点)\n25-49: 恐慌\n50-74: 贪婪\n75-100: 极度贪婪 (风险较高)"
     with c2: st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0, tooltip_text=fng_tooltip), unsafe_allow_html=True)
     
@@ -525,7 +514,7 @@ def show_live_dashboard():
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     st.altair_chart((area + l90 + l50 + l10).properties(height=300).interactive(), use_container_width=True)
-    st.caption(f"Engine: v10.6 User-Friendly | Signal: Hover for details")
+    st.caption(f"Engine: v10.7 Stable | Signal: Hover for details")
 
-st.markdown("### ⚡ BTDR 领航员 v10.6 User-Friendly")
+st.markdown("### ⚡ BTDR 领航员 v10.7 Stable")
 show_live_dashboard()
