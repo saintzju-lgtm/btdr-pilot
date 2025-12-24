@@ -6,3 +6,7 @@ scikit-learn
 requests
 streamlit-autorefresh
 pytz
+requests
+altair
+scipy
+plotly
