@@ -1,39 +1,79 @@
-# [修改点 1]: 计算 Kalman 预测 (保持不变)
-    pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
-    pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
-    
-    # [修改点 2]: 改进 AI 波动逻辑 - 锁定锚点
-    # 原逻辑: 基于当前价格 (price) 浮动 -> 导致追涨杀跌
-    # 新逻辑: 基于开盘价 (open) 或 VWAP 加上 3 倍波动率 -> 形成真正的"压力墙"
-    anchor_price = btdr['open'] if btdr['open'] > 0 else btdr['prev']
-    # 如果开盘价不可用，使用 Prev Close。放大系数从 2.5 提升到 3.0 以捕捉极端行情
-    ai_upper_bound_pct = (anchor_price * (1 + 3.0 * live_vol_pct) - btdr['prev']) / btdr['prev']
-    ai_lower_bound_pct = (anchor_price * (1 - 3.0 * live_vol_pct) - btdr['prev']) / btdr['prev']
-    
-    # [修改点 3]: 调整权重 - 降低实时 AI 噪音，增加历史统计权重
-    # 原权重: w_ai 0.5 太高
-    w_kalman = 0.4; w_hist = 0.25; w_mom = 0.15; w_ai = 0.2 
-    
-    final_h_ret = (w_kalman * pred_h_kalman) + (w_hist * ai_model['ensemble_hist_h']) + (w_mom * ai_model['ensemble_mom_h']) + (w_ai * ai_upper_bound_pct)
-    final_l_ret = (w_kalman * pred_l_kalman) + (w_hist * ai_model['ensemble_hist_l']) + (w_mom * ai_model['ensemble_mom_l']) + (w_ai * ai_lower_bound_pct)
-    
-    sentiment_adj = (fng_val - 50) * 0.0005
-    final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
-    
-    # 计算原始目标位
-    raw_p_high = btdr['prev'] * (1 + final_h_ret)
-    raw_p_low = btdr['prev'] * (1 + final_l_ret)
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import time
+import requests
+import altair as alt
+from datetime import datetime, time as dt_time
+import pytz
+from scipy.stats import norm
 
-    # [修改点 4]: Session State 平滑滤波 - 彻底解决数字跳动
-    if 'smooth_high' not in st.session_state: st.session_state.smooth_high = raw_p_high
-    if 'smooth_low' not in st.session_state: st.session_state.smooth_low = raw_p_low
+# --- 1. 页面配置 & 样式 ---
+# 更新标题为 v10.8 Mod
+st.set_page_config(page_title="BTDR Pilot v10.8 Mod", layout="centered")
 
-    # 仅当变化超过 0.5% 或为了平滑时更新 (EMA 滤波)
-    # 0.95 的平滑系数意味着新数值只占 5% 的权重，数字会非常稳定
-    smoothing_factor = 0.95
-    st.session_state.smooth_high = (st.session_state.smooth_high * smoothing_factor) + (raw_p_high * (1 - smoothing_factor))
-    st.session_state.smooth_low = (st.session_state.smooth_low * smoothing_factor) + (raw_p_low * (1 - smoothing_factor))
-
-    # 赋值给最终显示变量
-    p_high = st.session_state.smooth_high
-    p_low = st.session_state.smooth_low
+CUSTOM_CSS = """
+<style>
+    html { overflow-y: scroll; }
+    .stApp > header { display: none; }
+    .stApp { margin-top: -30px; background-color: #ffffff; }
+    div[data-testid="stStatusWidget"] { visibility: hidden; }
+    
+    h1, h2, h3, div, p, span { 
+        color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
+    }
+    
+    div[data-testid="stAltairChart"] {
+        height: 320px !important; min-height: 320px !important;
+        overflow: hidden !important; border: 1px solid #f8f9fa;
+    }
+    
+    /* Metric Card */
+    .metric-card {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02); height: 95px; padding: 0 16px;
+        display: flex; flex-direction: column;
+        justify-content: center;
+        position: relative; transition: all 0.2s;
+    }
+    .metric-card.has-tooltip { cursor: help; }
+    .metric-card.has-tooltip:hover { border-color: #ced4da; }
+    
+    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
+    .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
+    .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
+    
+    /* Miner Card */
+    .miner-card {
+        background-color: #fff;
+        border: 1px solid #e9ecef;
+        border-radius: 10px; padding: 8px 10px;
+        text-align: center; height: 100px;
+        display: flex; flex-direction: column; justify-content: space-between;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .miner-sym { font-size: 0.75rem; color: #888; font-weight: 600; margin-bottom: 2px; }
+    .miner-price { font-size: 1.1rem; font-weight: 700; color: #212529; }
+    .miner-sub { font-size: 0.7rem; display: flex; justify-content: space-between; margin-top: 4px; }
+    .miner-pct { font-weight: 600; }
+    .miner-turn { color: #868e96; }
+    
+    /* Factor Box */
+    .factor-box {
+        background: #fff;
+        border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
+        height: 75px; display: flex; flex-direction: column; justify-content: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.02); position: relative; cursor: help; transition: transform 0.1s;
+    }
+    .factor-box:hover { border-color: #ced4da; transform: translateY(-1px); }
+    .factor-title { font-size: 0.65rem; color: #999; text-transform: uppercase; letter-spacing: 0.5px; }
+    .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
+    .factor-sub { font-size: 0.7rem; font-weight: 600; }
+    
+    /* Tooltip Core */
+    .tooltip-text {
+        visibility: hidden;
+        width: 180px; background-color:
