@@ -6,7 +6,7 @@ from sklearn.linear_model import LinearRegression
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- 1. 数据引擎 ---
+# --- 1. 数据引擎 (实时拟合刷新) ---
 @st.cache_data(ttl=60)
 def get_btdr_final_data():
     ticker = "BTDR"
@@ -24,6 +24,7 @@ def get_btdr_final_data():
     hist['换手率'] = (hist['Volume'] / float_shares) * 100
     hist['5日均值'] = hist['Close'].rolling(5).mean()
     
+    # 动态执行线性回归
     fit_df = hist.dropna()
     X = fit_df[['今开比例']].values
     m_h = LinearRegression().fit(X, fit_df['最高比例'].values)
@@ -37,7 +38,7 @@ def get_btdr_final_data():
 
 # --- 2. 界面显示 ---
 st.set_page_config(layout="wide")
-st.title("🏹 BTDR 专业量化终端 (场景识别版)")
+st.title("🏹 BTDR 专业量化终端 (大形态+场景识别版)")
 
 try:
     hist_df, live_df, float_shares, reg = get_btdr_final_data()
@@ -50,87 +51,101 @@ try:
     today_open = regular_market['Open'].iloc[0] if not regular_market.empty else live_df['Open'].iloc[-1]
     today_open_ratio = (today_open - last_hist['Close']) / last_hist['Close']
 
-    # 计算中性预测 (a + b * open_ratio)
+    # 计算中性预测线
     p_h_mid = last_hist['Close'] * (1 + (reg['inter_h'] + reg['slope_h'] * today_open_ratio))
     p_l_mid = last_hist['Close'] * (1 + (reg['inter_l'] + reg['slope_l'] * today_open_ratio))
-    
-    # 定义场景边界 (±6%)
-    p_h_opt = p_h_mid * 1.06
-    p_l_pes = p_l_mid * 0.94
-    
     today_turnover = (live_df['Volume'].sum() / float_shares) * 100
 
-    # --- 核心：场景自动识别器 ---
-    def detect_scenario(price, h_mid, l_mid, turnover):
-        if price >= h_mid and turnover >= 10:
-            return "乐观场景", "#00FF00", "突破中性压力，量能配合，目标看向乐观位上限。"
-        elif price <= l_mid and turnover >= 15:
-            return "悲观场景", "#FF4B4B", "击穿中性支撑，恐慌盘触发，正在下探悲观位。"
-        else:
-            return "中性场景", "#1E90FF", "运行于统计区间内，波动受回归线锚定。"
+    # --- 场景自动定位 (基于开盘预测位的偏离) ---
+    def get_market_scene(p, h, l, vol):
+        if p >= h * 1.01 and vol >= 10: return "乐观场景", "#00FF00", "价格有效突破中性压力，量能配合。"
+        elif p <= l * 0.99 and vol >= 10: return "悲观场景", "#FF4B4B", "价格击穿中性支撑，空头占优。"
+        else: return "中性场景", "#1E90FF", "价格在回归预测区间内运行，大形态稳健。"
 
-    scene_name, scene_color, scene_desc = detect_scenario(curr_p, p_h_mid, p_l_mid, today_turnover)
+    s_name, s_color, s_desc = get_market_scene(curr_p, p_h_mid, p_l_mid, today_turnover)
 
-    # 1. 顶部指标与场景状态
-    st.subheader(f"当前市场状态：:{scene_color}[{scene_name}]")
-    st.info(f"**识别逻辑**：{scene_desc}")
+    # 1. 顶部场景与指标
+    st.markdown(f"### 当前定位：:{s_color}[{s_name}] <small>({s_desc})</small>", unsafe_allow_html=True)
     
     p1, p2, p3, p4 = st.columns(4)
     p1.metric("当前实时价", f"${curr_p:.2f}", f"{(curr_p/last_hist['Close']-1):.2%}")
-    p2.metric("中性最高 (H-Mid)", f"${p_h_mid:.2f}")
-    p3.metric("中性最低 (L-Mid)", f"${p_l_mid:.2f}")
+    p2.metric("中性压力 (H-Mid)", f"${p_h_mid:.2f}")
+    p3.metric("中性支撑 (L-Mid)", f"${p_l_mid:.2f}")
     t_status = "red" if today_turnover >= 20 else "orange" if today_turnover >= 10 else "green"
-    p4.markdown(f"**实时换手率**\n### :{t_status}[{today_turnover:.2f}%]")
+    p4.markdown(f"**当日累计换手**\n### :{t_status}[{today_turnover:.2f}%]")
 
     st.divider()
 
-    # 2. 形态建议与场景表
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        st.subheader("🤖 场景化形态解析")
-        if scene_name == "乐观场景":
-            st.success(f"🔥 **强势形态**：当前价格 `${curr_p:.2f}` 已站稳中性压力位。MA5 (${last_hist['5日均值']:.2f}) 形成支撑，建议持筹待涨。")
-        elif scene_name == "悲观场景":
-            st.error(f"⚠️ **弱势形态**：跌破中性支撑位。若换手率继续放大且无法收复 `${p_l_mid:.2f}`，需警惕下探 `${p_l_pes:.2f}`。")
+    # 2. 深度形态分析 (保持原有判断逻辑)
+    col_analysis, col_table = st.columns([2, 1])
+    
+    with col_analysis:
+        st.subheader("🤖 深度形态分析结论")
+        analysis_points = []
+        
+        # 维度1：空间定位
+        if curr_p >= p_h_mid * 0.98:
+            analysis_points.append(f"🔴 **位置压力**：股价已触及/接近预测压力位 `${p_h_mid:.2f}`。需观察此处是否有大笔卖单抛压。")
+        elif curr_p <= p_l_mid * 1.02:
+            analysis_points.append(f"🟢 **位置支撑**：股价回落至预测支撑位 `${p_l_mid:.2f}` 附近，具备博弈反弹的价值。")
+        
+        # 维度2：均线趋势 (MA5)
+        if curr_p > last_hist['5日均值']:
+            analysis_points.append(f"📈 **趋势特征**：当前运行在5日均线 `${last_hist['5日均值']:.2f}` 之上，属于强势多头形态。")
         else:
-            st.warning(f"⚖️ **震荡形态**：价格在回归区间内横盘。建议在 `${p_l_mid:.2f}` 附近低吸，`${p_h_mid:.2f}` 附近减仓。")
+            analysis_points.append(f"📉 **趋势特征**：受5日均线反压，重心有所下移，短期形态转入弱势调整。")
 
-    with col_b:
-        st.subheader("📊 完整预测场景表")
-        sc_df = pd.DataFrame({
+        # 维度3：量能异动
+        if today_turnover >= 20:
+            analysis_points.append(f"🔥 **极度放量**：换手率已达 {today_turnover:.2f}%。这种“死亡换手”在顶部通常是派发，在底部则是剧烈洗盘。")
+        elif today_turnover >= 10:
+            analysis_points.append(f"🟠 **活跃量能**：成交活跃，股价波动将大概率触及场景预测的边界。")
+
+        # 维度4：盘前背离检测
+        pre_m = live_df.between_time('04:00', '09:29')
+        if not pre_m.empty and (pre_m['Close'].iloc[-1] > pre_m['Close'].iloc[0]) and (today_turnover < 2):
+            analysis_points.append("⚠️ **潜在背离**：盘前虽有拉升但量能极其匮乏，警惕开盘后的诱多形态。")
+
+        for point in analysis_points: st.write(point)
+
+    with col_table:
+        st.subheader("📊 场景预测明细")
+        # 保持要求的 ±6% 推算
+        scenario_data = {
             "场景": ["乐观(+6%)", "中性(回归)", "悲观(-6%)"],
-            "预测最高": [p_h_opt, p_h_mid, p_h_mid * 0.94],
-            "预测最低": [p_l_mid * 1.06, p_l_mid, p_l_pes]
-        })
-        st.table(sc_df.style.format(precision=2))
+            "最高价预测": [p_h_mid * 1.06, p_h_mid, p_h_mid * 0.94],
+            "最低价预测": [p_l_mid * 1.06, p_l_mid, p_l_mid * 0.94]
+        }
+        st.table(pd.DataFrame(scenario_data).style.format(precision=2))
 
-    # 3. 可视化图表 (MM/DD 垂直坐标)
+    # 3. 可视化图表 (时间轴垂直 MM/DD)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
     plot_df = hist_df.tail(20).copy()
     plot_df['date_label'] = plot_df.index.strftime('%m/%d')
 
-    fig.add_trace(go.Candlestick(x=plot_df['date_label'], open=plot_df['Open'], high=plot_df['High'], low=plot_df['Low'], close=plot_df['Close'], name="K线"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=plot_df['date_label'], open=plot_df['Open'], high=plot_df['High'], 
+                                 low=plot_df['Low'], close=plot_df['Close'], name="K线"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=plot_df['date_label'], y=plot_df['5日均值'], name="MA5", line=dict(color='yellow', width=1.5)), row=1, col=1)
     
-    # 动态压力支撑线
-    fig.add_hline(y=p_h_mid, line_dash="dash", line_color="#1E90FF", annotation_text="中性压力", row=1, col=1)
-    fig.add_hline(y=p_l_mid, line_dash="dash", line_color="#1E90FF", annotation_text="中性支撑", row=1, col=1)
-    if scene_name == "乐观场景":
-        fig.add_hline(y=p_h_opt, line_dash="dot", line_color="#00FF00", annotation_text="乐观目标", row=1, col=1)
+    # 画出预测线
+    fig.add_hline(y=p_h_mid, line_dash="dash", line_color="cyan", annotation_text="回归压力", row=1, col=1)
+    fig.add_hline(y=p_l_mid, line_dash="dash", line_color="cyan", annotation_text="回归支撑", row=1, col=1)
 
-    fig.add_trace(go.Bar(x=plot_df['date_label'], y=plot_df['换手率'], name="换手率", marker_color=['red' if x >= 20 else 'orange' if x >= 10 else 'gray' for x in plot_df['换手率']]), row=2, col=1)
-    
+    fig.add_trace(go.Bar(x=plot_df['date_label'], y=plot_df['换手率'], name="换手率",
+                         marker_color=['red' if x >= 20 else 'orange' if x >= 10 else 'gray' for x in plot_df['换手率']]), row=2, col=1)
+
     fig.update_xaxes(tickangle=-90, dtick=1, row=1, col=1)
     fig.update_xaxes(tickangle=-90, dtick=1, row=2, col=1)
     fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 4. 底部历史数据
-    st.subheader("📋 历史明细 (百分比格式)")
-    show_df = hist_df.tail(10).copy()
+    # 4. 底部明细表
+    st.subheader("📋 历史参考 (百分比格式)")
+    show_df = hist_df.tail(12).copy()
     show_df.index = show_df.index.date
     for c in ['换手率', '今开比例', '最高比例', '最低比例']:
         show_df[c] = show_df[c].map('{:.2f}%'.format)
-    st.dataframe(show_df[['Open', 'High', 'Low', 'Close', '换手率', '今开比例', '最高比例', '最低比例']].style.format(precision=2))
+    st.dataframe(show_df[['Open', 'High', 'Low', 'Close', '换手率', '今开比例', '最高比例', '最低比例', '5日均值']].style.format(precision=2))
 
 except Exception as e:
-    st.error(f"计算逻辑刷新中: {e}")
+    st.error(f"分析模块自动刷新中: {e}")
