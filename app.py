@@ -5,153 +5,96 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
 
-# --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR 实时量化监控", layout="wide")
-
-# --- 2. 核心数据获取 (yfinance API) ---
-@st.cache_data(ttl=60)  # 缓存1分钟，保证实时性同时减少请求压力
-def get_live_and_hist_data():
-    ticker_symbol = "BTDR"
-    # 获取历史 60 天日线数据用于回归拟合
-    hist = yf.download(ticker_symbol, period="60d", interval="1d")
-    if isinstance(hist.columns, pd.MultiIndex): hist.columns = hist.columns.get_level_values(0)
+# --- 1. 核心分析函数：深度形态拆解 ---
+def get_advanced_analysis(curr_p, p_high, p_low, turnover, hist_df, live_df):
+    """
+    结合量、换手、回归高低位、K线形态进行多维度综合评分
+    """
+    analysis_log = []
+    risk_level = "中性"
     
-    # 获取今日实时数据 (含盘前)
-    today_1m = yf.download(ticker_symbol, period="1d", interval="1m", prepost=True)
-    if isinstance(today_1m.columns, pd.MultiIndex): today_1m.columns = today_1m.columns.get_level_values(0)
+    # A. 空间定位 (Space): 股价在预测区间的位置
+    dist_to_high = (p_high - curr_p) / p_high
+    dist_to_low = (curr_p - p_low) / p_low
     
-    # 基础信息 (流通股本按表中 1.18亿 计算)
-    float_shares = 118000000 
-    prev_close = hist['Close'].iloc[-2]  # 昨日收盘
-    
-    # 模拟表中计算字段
-    hist['Prev_Close'] = hist['Close'].shift(1)
-    hist['Open_Ratio'] = (hist['Open'] - hist['Prev_Close']) / hist['Prev_Close']
-    hist['Max_Ratio'] = (hist['High'] - hist['Prev_Close']) / hist['Prev_Close']
-    hist['Min_Ratio'] = (hist['Low'] - hist['Prev_Close']) / hist['Prev_Close']
-    hist['Turnover'] = (hist['Volume'] / float_shares) * 100
-    hist['MA5'] = hist['Close'].rolling(window=5).mean()
-    
-    return hist.dropna(), today_1m, float_shares, prev_close
-
-# --- 3. 逻辑处理 ---
-try:
-    hist_df, live_df, float_shares, prev_close = get_live_and_hist_data()
-    
-    # 回归预测逻辑 (功能 1)
-    X = hist_df[['Open_Ratio']].values
-    y_h = hist_df['Max_Ratio'].values
-    y_l = hist_df['Min_Ratio'].values
-    model_h = LinearRegression().fit(X, y_h)
-    model_l = LinearRegression().fit(X, y_l)
-    
-    # 确定当前状态
-    curr_price = live_df['Close'].iloc[-1]
-    # 区分盘前与盘中开盘价
-    live_df.index = live_df.index.tz_convert('America/New_York')
-    regular_market = live_df.between_time('09:30', '16:00')
-    today_open = regular_market['Open'].iloc[0] if not regular_market.empty else live_df['Open'].iloc[-1]
-    
-    today_open_ratio = (today_open - prev_close) / prev_close
-    pred_h = prev_close * (1 + model_h.predict([[today_open_ratio]])[0])
-    pred_l = prev_close * (1 + model_l.predict([[today_open_ratio]])[0])
-    
-    # 今日换手率
-    today_vol = live_df['Volume'].sum()
-    today_turnover = (today_vol / float_shares) * 100
-
-except Exception as e:
-    st.error(f"API 获取失败: {e}")
-    st.stop()
-
-# --- 4. 界面布局 ---
-st.title("🏹 BTDR 实时量化交易看板 (API 驱动)")
-
-# 侧边栏：核心数据摘要
-st.sidebar.header("实时行情摘要")
-st.sidebar.metric("当前价", f"${curr_price:.2f}", f"{(curr_price/prev_close-1):.2%}")
-st.sidebar.metric("今日预测高点", f"${pred_h:.2f}")
-st.sidebar.metric("今日预测低点", f"${pred_l:.2f}")
-
-# 主页标签
-tab_main, tab_prepost = st.tabs(["📊 日线与操作决策", "🕒 盘前/盘后折叠"])
-
-with tab_main:
-    # 预警状态显示
-    c1, c2 = st.columns([2, 1])
-    
-    with c1:
-        # 换手率颜色逻辑 (功能 3)
-        t_color = "red" if today_turnover >= 20 else "orange" if today_turnover >= 10 else "green"
-        st.markdown(f"#### 今日实时换手率预警: :{t_color}[{today_turnover:.2f}%]")
-        
-        # 主图：K线 + 5日均线 + 预测带
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
-        # 展示最近15天日线
-        plot_df = hist_df.tail(15)
-        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
-                                     low=plot_df['Low'], close=plot_df['Close'], name="日线"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MA5'], name="5日均值", line=dict(color='yellow')), row=1, col=1)
-        
-        # 预测虚线
-        fig.add_hline(y=pred_h, line_dash="dash", line_color="red", annotation_text="预测压力", row=1, col=1)
-        fig.add_hline(y=pred_l, line_dash="dash", line_color="green", annotation_text="预测支撑", row=1, col=1)
-        
-        # 换手率柱状图
-        fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Turnover'], name="历史换手率", 
-                             marker_color=['red' if x >= 20 else 'orange' if x >= 10 else 'gray' for x in plot_df['Turnover']]), row=2, col=1)
-        
-        fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with c2:
-        # 功能 (2)：操作建议
-        st.subheader("🤖 AI 操作建议")
+    if curr_p >= p_high * 0.98:
+        analysis_log.append("📍 **空间定位：极高位。** 股价已触及统计学回归压力位，继续向上空间受历史惯性压制。")
+        score = -3
+    elif curr_p <= p_low * 1.02:
+        analysis_log.append("📍 **空间定位：支撑位。** 股价回落至预测波动下沿，具备技术性反弹的统计学基础。")
+        score = 2
+    else:
+        analysis_log.append(f"📍 **空间定位：震荡区。** 处于预测区间 [${p_low:.2f} - ${p_high:.2f}] 中部，趋势不明朗。")
         score = 0
-        reasons = []
+
+    # B. 量能热度 (Energy): 换手率级联分析
+    if turnover >= 20:
+        analysis_log.append("🔥 **量能状态：极度过热。** 换手率突破 20%，说明多空筹码剧烈换手。若在高位则是主力派发，在低位则是机构吸筹。")
+        risk_level = "极高"
+    elif turnover >= 10:
+        analysis_log.append("🟠 **量能状态：高度活跃。** 10%-20% 的换手率代表市场关注度极高，日内波动将显著放大。")
+        risk_level = "较高"
+    else:
+        analysis_log.append("🟢 **量能状态：温和。** 换手率处于正常水平，价格波动受散户情绪驱动较小。")
+
+    # C. 量价协同 (Divergence): 实时动态背离
+    # 获取最近 15 分钟的 1m 线趋势
+    recent_15 = live_df.tail(15)
+    if len(recent_15) >= 15:
+        price_change = recent_15['Close'].iloc[-1] - recent_15['Close'].iloc[0]
+        vol_trend = recent_15['Volume'].tail(5).mean() - recent_15['Volume'].head(5).mean()
         
-        # 位置建议
-        if curr_price >= pred_h * 0.98:
-            score -= 2; reasons.append("触及回归压力位")
-        elif curr_price <= pred_l * 1.02:
-            score += 2; reasons.append("接近回归支撑位")
-            
-        # 成交量建议
-        if today_turnover > 15:
-            reasons.append("今日成交显著放量")
-            
-        # 最终指令
-        if score >= 2: st.success("### 建议操作：买入/加仓")
-        elif score <= -2: st.error("### 建议操作：止盈/减仓")
-        else: st.warning("### 建议操作：持仓观望")
-        
-        st.write("**分析逻辑：**")
-        for r in reasons: st.write(f"- {r}")
+        if price_change > 0 and vol_trend < 0:
+            analysis_log.append("⚠️ **量价背离：缩量拉升。** 股价上涨但买盘动能衰减，盘中诱多风险增大。")
+            score -= 2
+        elif price_change < 0 and vol_trend < 0:
+            analysis_log.append("📉 **量价协同：缩量回调。** 下跌时抛压同步减小，属于健康的洗盘形态。")
+            score += 1
 
-    # 底部显示最近10日数据表格
-    st.subheader("📋 最近10个交易日明细")
-    st.dataframe(hist_df.tail(10)[['Open', 'High', 'Low', 'Close', 'Volume', 'Turnover', 'MA5']].style.format(precision=2))
+    # D. 5日均线 (Trend)
+    ma5_val = hist_df['MA5'].iloc[-1]
+    if curr_p > ma5_val:
+        analysis_log.append(f"📈 **趋势特征：多头占优。** 当前价位于 5 日均线 (${ma5_val:.2f}) 之上，短期趋势向上。")
+    else:
+        analysis_log.append(f"📉 **趋势特征：空头压制。** 股价受 5 日均线反压，需关注下方支撑。")
 
-with tab_prepost:
-    # 功能：折叠查看盘前盘后
-    with st.expander("🕒 盘前数据详情 (04:00 - 09:30)"):
-        pre_market = live_df.between_time('04:00', '09:29')
-        if not pre_market.empty:
-            st.write(f"盘前最高: ${pre_market['High'].max():.2f}")
-            st.write(f"盘前成交量: {pre_market['Volume'].sum():,}")
-            # 背离识别逻辑
-            p_change = pre_market['Close'].iloc[-1] - pre_market['Close'].iloc[0]
-            v_trend = pre_market['Volume'].tail(5).mean() < pre_market['Volume'].head(5).mean()
-            if p_change > 0 and v_trend:
-                st.error("⚠️ 检测到盘前【价涨量缩】背离")
-        else:
-            st.write("暂无盘前交易数据")
+    return analysis_log, score, risk_level
 
-    with st.expander("🌙 盘后数据详情 (16:00 - 20:00)"):
-        after_market = live_df.between_time('16:00', '20:00')
-        if not after_market.empty:
-            st.dataframe(after_market.tail(10))
-        else:
-            st.write("尚未进入盘后交易时段")
+# --- 2. 界面展示逻辑 (部分展示) ---
+# (假设前面已接入 yfinance 数据获取部分)
+
+with st.sidebar:
+    st.header("📊 实时决策报告")
+    logs, final_score, risk = get_advanced_analysis(curr_p, pred_h, pred_l, today_turnover, hist_df, live_df)
+    
+    # 根据得分给出最终结论
+    if final_score >= 2:
+        st.success("🎯 **综合策略：建议试探性买入**")
+    elif final_score <= -2:
+        st.error("🎯 **综合策略：建议分批逢高减仓**")
+    else:
+        st.warning("🎯 **综合策略：建议继续观望**")
+
+    st.write(f"**风险等级：{risk}**")
+    st.divider()
+    for log in logs:
+        st.markdown(log)
+
+# --- 3. 增强版图表渲染 ---
+# 加入换手率预警线和回归预测带
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+# K线主图
+fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], ...), row=1, col=1)
+# 加上 5 日均线
+fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MA5'], name="5日线"), row=1, col=1)
+# 加上回归线
+fig.add_hline(y=pred_h, line_dash="dash", line_color="red", row=1, col=1)
+fig.add_hline(y=pred_l, line_dash="dash", line_color="green", row=1, col=1)
+
+# 换手率预警图
+fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['Turnover'], ...), row=2, col=1)
+# 加上 10% 和 20% 警戒线
+fig.add_hline(y=10, line_dash="dot", line_color="orange", row=2, col=1)
+fig.add_hline(y=20, line_dash="dot", line_color="red", row=2, col=1)
