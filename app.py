@@ -4,124 +4,96 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 import plotly.graph_objects as go
-from datetime import datetime, time
+from plotly.subplots import make_subplots
 
-# --- 页面配置 ---
-st.set_page_config(page_title="BTDR 盘前决策终端", layout="wide")
-
-@st.cache_data(ttl=60) # 盘前数据建议缓存时间设短（1分钟）
-def get_premarket_data():
+# --- 1. 数据抓取与预处理 ---
+@st.cache_data(ttl=60)
+def get_premarket_intel():
     ticker_symbol = "BTDR"
-    ticker = yf.Ticker(ticker_symbol)
-    
-    # 1. 获取流通盘 (Float)
-    float_shares = ticker.info.get('floatShares', 35000000)
-    
-    # 2. 获取包含盘前数据的 1分钟 K线 (只取最近1天)
-    # yfinance 的 prepost=True 会包含 4:00 AM 以后的数据
-    data_1m = yf.download(ticker_symbol, period="1d", interval="1m", prepost=True)
-    
-    if isinstance(data_1m.columns, pd.MultiIndex):
-        data_1m.columns = data_1m.columns.get_level_values(0)
-        
-    # 3. 筛选盘前时段 (美东时间 04:00 - 09:30)
-    # 转换索引为美东时间
-    data_1m.index = data_1m.index.tz_convert('America/New_York')
-    pre_market = data_1m.between_time('04:00', '09:29')
-    
-    return pre_market, float_shares, ticker
-
-# --- 获取基础历史数据用于回归 ---
-@st.cache_data(ttl=3600)
-def get_hist_for_reg():
-    df = yf.download("BTDR", period="60d")
+    # 获取 1d/1m 含盘前数据
+    df = yf.download(ticker_symbol, period="1d", interval="1m", prepost=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    df['Prev_Close'] = df['Close'].shift(1)
-    df['Open_Ratio'] = (df['Open'] - df['Prev_Close']) / df['Prev_Close']
-    df['Max_Ratio'] = (df['High'] - df['Prev_Close']) / df['Prev_Close']
-    df['Min_Ratio'] = (df['Low'] - df['Prev_Close']) / df['Prev_Close']
-    return df.dropna()
-
-# --- 主逻辑执行 ---
-pre_df, float_shares, ticker_obj = get_premarket_data()
-hist_df = get_hist_for_reg()
-last_close = hist_df['Close'].iloc[-1]
-
-# --- 1. 盘前核心指标计算 ---
-if not pre_df.empty:
-    pre_vol = pre_df['Volume'].sum()
-    pre_high = pre_df['High'].max()
-    pre_low = pre_df['Low'].min()
-    pre_last_price = pre_df['Close'].iloc[-1]
     
-    pre_turnover = (pre_vol / float_shares) * 100
-    pre_change = (pre_last_price - last_close) / last_close
-else:
-    # 盘前未开始或无数据
-    pre_vol, pre_last_price, pre_turnover, pre_change = 0, last_close, 0, 0
+    # 转换美东时间并截取盘前 (04:00 - 09:30)
+    df.index = df.index.tz_convert('America/New_York')
+    pre_df = df.between_time('04:00', '09:29').copy()
+    
+    # 计算基础指标
+    info = yf.Ticker(ticker_symbol).info
+    float_shares = info.get('floatShares', 35000000)
+    
+    return pre_df, float_shares
 
-# --- 2. 基于盘前价格进行回归预测 ---
-X = hist_df[['Open_Ratio']].values
-model_h = LinearRegression().fit(X, hist_df['Max_Ratio'].values)
-model_l = LinearRegression().fit(X, hist_df['Min_Ratio'].values)
+# --- 2. 背离识别逻辑 ---
+def detect_divergence(df):
+    if len(df) < 15:  # 数据不足时不分析
+        return "等待更多盘前数据...", "gray"
+    
+    # 取最近 15 分钟的数据进行趋势对比
+    recent = df.tail(15)
+    price_trend = recent['Close'].iloc[-1] - recent['Close'].iloc[0]
+    
+    # 使用移动平均成交量判断量能趋势
+    vol_sma_start = recent['Volume'].iloc[:5].mean()
+    vol_sma_end = recent['Volume'].iloc[-5:].mean()
+    vol_trend = vol_sma_end - vol_sma_start
 
-# 假设盘前最后价格即为今日大概率开盘价
-pred_h_price = last_close * (1 + model_h.predict([[pre_change]])[0])
-pred_l_price = last_close * (1 + model_l.predict([[pre_change]])[0])
+    # 情况 A: 价升量缩 (看跌背离)
+    if price_trend > 0 and vol_trend < 0:
+        return "🚨 警惕：价涨量缩 (看跌背离)", "red"
+    
+    # 情况 B: 价跌量缩 (潜在买点)
+    if price_trend < 0 and vol_trend < 0:
+        return "📉 信号：价跌量缩 (抛压衰竭)", "orange"
+    
+    # 情况 C: 价升量增 (健康上涨)
+    if price_trend > 0 and vol_trend > 0:
+        return "🚀 强劲：价量齐升 (真实趋势)", "green"
+    
+    return "➡️ 状态：盘前波动较小", "gray"
 
 # --- 3. UI 渲染 ---
-st.title(f"🚀 BTDR 盘前异动监控系统")
+st.title("🏹 BTDR 盘前智能量价终端")
 
-# 顶部盘前状态栏
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("盘前现价", f"${pre_last_price:.2f}", f"{pre_change:.2%)")
-c2.metric("盘前换手率", f"{pre_turnover:.2f}%")
-c3.metric("预测全天最高", f"${pred_h_price:.2f}")
-c4.metric("预测全天最低", f"${pred_l_price:.2f}")
+pre_df, float_shares = get_premarket_intel()
 
-st.divider()
-
-col_l, col_r = st.columns([2, 1])
-
-with col_l:
-    st.subheader("⏰ 盘前 1分钟 走势图")
-    if not pre_df.empty:
-        fig = go.Figure(data=[go.Candlestick(
-            x=pre_df.index, open=pre_df['Open'], high=pre_df['High'],
-            low=pre_df['Low'], close=pre_df['Close'], name="盘前K线"
-        )])
-        fig.update_layout(xaxis_rangeslider_visible=False, height=400, template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("当前非盘前时段或无成交数据")
-
-with col_r:
-    st.subheader("🚨 盘前异动分析")
+if not pre_df.empty:
+    # 状态判定
+    status_msg, status_color = detect_divergence(pre_df)
+    pre_vol = pre_df['Volume'].sum()
+    pre_turnover = (pre_vol / float_shares) * 100
     
-    # 盘前逻辑判定
-    analysis_points = []
-    
-    # 判定 A: 异常放量
-    # 通常盘前换手率超过 1% 就算非常活跃
-    if pre_turnover > 2.0:
-        st.error("### 信号：盘前异常爆量")
-        analysis_points.append("盘前换手率异常，主力在剧烈换手。")
-    elif pre_turnover > 0.5:
-        st.warning("### 信号：盘前交投活跃")
-        analysis_points.append("活跃度高于平均水平。")
-    
-    # 判定 B: 盘前走势对全天影响
-    if pre_change > 0.05 and pre_last_price >= pre_high * 0.98:
-        analysis_points.append("盘前强势且收在最高点附近，开盘惯性冲高概率大。")
-    elif pre_change < -0.05:
-        analysis_points.append("盘前深幅跳空，需关注回归预测的底部支撑位。")
-
-    for p in analysis_points:
-        st.write(f"📌 {p}")
+    # 顶部看板
+    c1, c2, c3 = st.columns(3)
+    c1.metric("盘前成交量", f"{pre_vol:,}")
+    c2.metric("盘前换手率", f"{pre_turnover:.2f}%")
+    c3.markdown(f"### 当前量价态势:\n:{status_color}[{status_msg}]")
 
     st.divider()
-    st.write("**今日关键点位参考：**")
-    st.write(f"- 盘前高点：`${pre_high:.2f}`")
-    st.write(f"- 盘前低点：`${pre_low:.2f}`")
-    st.write(f"- 预测波动区间：`${pred_l_price:.2f} ~ ${pred_h_price:.2f}`")
+
+    # 画图：K线 + 成交量
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+    # K线
+    fig.add_trace(go.Candlestick(x=pre_df.index, open=pre_df['Open'], high=pre_df['High'],
+                                 low=pre_df['Low'], close=pre_df['Close'], name="1m K线"), row=1, col=1)
+    # 成交量
+    fig.add_trace(go.Bar(x=pre_df.index, y=pre_df['Volume'], name="成交量", 
+                         marker_color='royalblue', opacity=0.5), row=2, col=1)
+
+    fig.update_layout(xaxis_rangeslider_visible=False, height=600, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 操作建议
+    st.subheader("💡 盘前操作建议")
+    if "看跌背离" in status_msg:
+        st.error("分析：盘前价格由虚火带动，缺乏实际买盘。建议：正式开盘后不要盲目追高，等待第一次回调支撑。")
+    elif "价量齐升" in status_msg:
+        st.success("分析：机构在盘前真实建仓。建议：关注 9:30 开盘后的放量突破机会。")
+    elif pre_turnover > 10:
+        st.warning(f"分析：换手率已达 {pre_turnover:.2f}%，日内波动极剧。建议：严格设置止损。")
+
+else:
+    st.info("目前暂无盘前成交数据。美股盘前通常在东部时间 04:00 开始。")
