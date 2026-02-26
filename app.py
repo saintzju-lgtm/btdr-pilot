@@ -4,155 +4,145 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 import plotly.graph_objects as go
-from datetime import datetime
 
-# --- 配置 ---
-st.set_page_config(page_title="BTDR 高级量化终端", layout="wide")
+# --- 页面配置 ---
+st.set_page_config(page_title="BTDR 量化终端 V2", layout="wide")
 
-# --- 1. 形态识别算法库 ---
-def identify_patterns(df):
-    """
-    识别基础 K 线形态逻辑 (基于价格关系)
-    """
-    patterns = []
-    last_row = df.iloc[-1]
-    prev_row = df.iloc[-2]
-    
-    # 实体大小与上下影线
-    body = last_row['Close'] - last_row['Open']
-    abs_body = abs(body)
-    upper_shadow = last_row['High'] - max(last_row['Close'], last_row['Open'])
-    lower_shadow = min(last_row['Close'], last_row['Open']) - last_row['Low']
-    
-    # 1. 吞没形态 (Engulfing)
-    if abs(prev_row['Close'] - prev_row['Open']) < abs_body:
-        if body > 0 and prev_row['Close'] < prev_row['Open']:
-            patterns.append("✨ 看涨吞没 (Bullish Engulfing)")
-        elif body < 0 and prev_row['Close'] > prev_row['Open']:
-            patterns.append("📉 看跌吞没 (Bearish Engulfing)")
-
-    # 2. 锤子线/流星线 (Hammer/Shooting Star)
-    if lower_shadow > abs_body * 2 and upper_shadow < abs_body * 0.5:
-        patterns.append("🔨 锤子线 (底部信号?)")
-    if upper_shadow > abs_body * 2 and lower_shadow < abs_body * 0.5:
-        patterns.append("☄️ 流星线 (顶部压力?)")
-
-    # 3. 跳空缺口
-    if last_row['Low'] > prev_row['High']:
-        patterns.append("🚀 向上跳空缺口")
-    elif last_row['High'] < prev_row['Low']:
-        patterns.append("🕳️ 向下跳空缺口")
-
-    return patterns if patterns else ["趋势延续/盘整"]
-
-# --- 2. 数据获取与处理 ---
-@st.cache_data(ttl=300)
-def get_advanced_data():
+# --- 核心数据获取函数 (修复版) ---
+@st.cache_data(ttl=600)
+def get_clean_data():
     ticker = "BTDR"
-    # 获取数据
-    df = yf.download(ticker, period="120d", interval="1d")
+    # 获取数据并强制转换格式
+    raw_df = yf.download(ticker, period="120d", interval="1d")
     
-    # 基础比例计算
+    # 修复 yfinance 的 MultiIndex 问题
+    if isinstance(raw_df.columns, pd.MultiIndex):
+        raw_df.columns = raw_df.columns.get_level_values(0)
+    
+    df = raw_df.copy()
+    
+    # 1. 基础指标计算 (使用 .copy() 避免 SettingWithCopyWarning)
     df['Prev_Close'] = df['Close'].shift(1)
+    
+    # 2. 功能 (1): 拟合比例计算 (基于截图公式)
+    # 计算开盘比、最高比、最低比
     df['Open_Ratio'] = (df['Open'] - df['Prev_Close']) / df['Prev_Close']
     df['Max_Ratio'] = (df['High'] - df['Prev_Close']) / df['Prev_Close']
     df['Min_Ratio'] = (df['Low'] - df['Prev_Close']) / df['Prev_Close']
     
-    # 量能指标
-    df['Vol_MA5'] = df['Volume'].rolling(5).mean()
-    df['Vol_Ratio'] = df['Volume'] / df['Vol_MA5']
-    
-    # 均线
+    # 3. 功能 (2): 形态与量化指标
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA20'] = df['Close'].rolling(20).mean()
+    df['Vol_MA5'] = df['Volume'].rolling(5).mean()
+    df['Body_Size'] = (df['Close'] - df['Open']) / df['Open']
     
     return df.dropna()
 
-data = get_advanced_data()
-last_data = data.iloc[-1]
-ticker_info = yf.Ticker("BTDR")
-live_price = ticker_info.fast_info['last_price']
-
-# --- 3. 回归预测范围 ---
-X_train = data[['Open_Ratio']].values
-model_h = LinearRegression().fit(X_train, data['Max_Ratio'].values)
-model_l = LinearRegression().fit(X_train, data['Min_Ratio'].values)
-
-today_open_r = (last_data['Open'] - last_data['Prev_Close']) / last_data['Prev_Close']
-pred_h = last_data['Prev_Close'] * (1 + model_h.predict([[today_open_r]])[0])
-pred_l = last_data['Prev_Close'] * (1 + model_l.predict([[today_open_r]])[0])
-
-# --- 4. 界面布局 ---
-st.title("BTDR 实时量化形态终端")
-
-col_info, col_chart = st.columns([1, 2])
-
-with col_info:
-    st.subheader("🛡️ 决策矩阵")
+# --- 逻辑处理 ---
+try:
+    df = get_clean_data()
+    last_row = df.iloc[-1]
     
-    # 形态识别展示
-    current_patterns = identify_patterns(data)
-    for p in current_patterns:
-        st.warning(p)
+    # 获取实时数据
+    ticker_obj = yf.Ticker("BTDR")
+    # 优先获取最新的实时价
+    live_info = ticker_obj.fast_info
+    current_price = live_info['last_price']
+    # 如果处于盘中，使用今日开盘；如果还没开盘，使用预期价格
+    today_open = live_info.get('open', current_price) 
     
-    # 换手率与成交量
-    vol_status = "放量" if last_data['Vol_Ratio'] > 1.5 else "缩量" if last_data['Vol_Ratio'] < 0.7 else "平量"
-    st.metric("成交量状态", f"{vol_status}", f"量比: {last_data['Vol_Ratio']:.2f}")
-    
-    # 操作建议逻辑
-    score = 0
-    reasons = []
-    
-    # 逻辑判断
-    if live_price < pred_l * 1.01: 
-        score += 2; reasons.append("价格接近预测支撑位")
-    if "看涨吞没" in str(current_patterns): 
-        score += 2; reasons.append("出现看涨形态")
-    if last_data['Close'] > last_data['MA20']: 
-        score += 1; reasons.append("站稳20日线")
-    if last_data['Vol_Ratio'] > 1.2 and last_data['Close'] > last_data['Open']:
-        score += 1; reasons.append("量价配合上涨")
+except Exception as e:
+    st.error(f"数据加载失败，请检查网络或代码: {e}")
+    st.stop()
 
-    # 输出建议
-    st.divider()
-    if score >= 4:
-        st.success("🎯 综合建议：积极做多 / 加仓")
-    elif score >= 2:
-        st.info("⚖️ 综合建议：持仓观望")
-    else:
-        st.error("⚠️ 综合建议：减仓 / 避险")
-    
-    with st.expander("查看评分逻辑"):
-        for r in reasons: st.write(f"- {r}")
+# --- 1. 波动范围拟合 (Linear Regression) ---
+X = df[['Open_Ratio']].values
+y_h = df['Max_Ratio'].values
+y_l = df['Min_Ratio'].values
 
-with col_chart:
-    st.subheader("🕯️ K线与预测区间")
-    fig = go.Figure(data=[go.Candlestick(
-        x=data.index[-20:],
-        open=data['Open'][-20:],
-        high=data['High'][-20:],
-        low=data['Low'][-20:],
-        close=data['Close'][-20:],
-        name="K线"
-    )])
+model_h = LinearRegression().fit(X, y_h)
+model_l = LinearRegression().fit(X, y_l)
+
+# 今日预测
+today_open_ratio = (today_open - last_row['Close']) / last_row['Close']
+pred_h_ratio = model_h.predict([[today_open_ratio]])[0]
+pred_l_ratio = model_l.predict([[today_open_ratio]])[0]
+
+pred_high_price = last_row['Close'] * (1 + pred_h_ratio)
+pred_low_price = last_row['Close'] * (1 + pred_l_ratio)
+
+# --- 2. 复杂形态识别 ---
+def detect_complex_patterns(data):
+    pats = []
+    curr = data.iloc[-1]
+    prev = data.iloc[-2]
     
-    # 加入预测区间线
-    fig.add_hline(y=pred_h, line_dash="dash", line_color="red", annotation_text="预测最高")
-    fig.add_hline(y=pred_l, line_dash="dash", line_color="green", annotation_text="预测最低")
-    
-    fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0))
+    # A. 吞没形态
+    if abs(curr['Close']-curr['Open']) > abs(prev['Close']-prev['Open']):
+        if curr['Close'] > curr['Open'] and prev['Close'] < prev['Open']:
+            pats.append("🌟 看涨吞没")
+        elif curr['Close'] < curr['Open'] and prev['Close'] > prev['Open']:
+            pats.append("🌑 看跌吞没")
+            
+    # B. 量价背离
+    if curr['Close'] > prev['Close'] and curr['Volume'] < prev['Vol_MA5'] * 0.8:
+        pats.append("⚠️ 缩量上涨 (动能不足)")
+        
+    # C. 支撑位判断
+    if curr['Low'] <= pred_low_price * 1.01:
+        pats.append("🛡️ 触及回归支撑区间")
+        
+    return pats
+
+active_patterns = detect_complex_patterns(df)
+
+# --- 3. UI 展示 ---
+st.title("BTDR 实时预测与形态终端")
+
+# 指标卡
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("当前成交价", f"${current_price:.2f}")
+m2.metric("今日开盘涨幅", f"{today_open_ratio:.2%}")
+m3.metric("预测最高点", f"${pred_high_price:.2f}", f"{pred_h_ratio:.2%}")
+m4.metric("预测最低点", f"${pred_low_price:.2f}", f"{pred_l_ratio:.2%}", delta_color="inverse")
+
+st.divider()
+
+left, right = st.columns([2, 1])
+
+with left:
+    st.subheader("📊 价格走势与预测边界")
+    fig = go.Figure()
+    # K线图
+    plot_df = df.tail(30)
+    fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df['Open'], high=plot_df['High'], 
+                                 low=plot_df['Low'], close=plot_df['Close'], name="K线"))
+    # 预测线
+    fig.add_hline(y=pred_high_price, line_dash="dash", line_color="red", annotation_text="今日压力")
+    fig.add_hline(y=pred_low_price, line_dash="dash", line_color="green", annotation_text="今日支撑")
+    fig.update_layout(xaxis_rangeslider_visible=False, height=450)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 5. 换手率分析 ---
-st.divider()
-st.subheader("📊 市场热度 (Market Heat)")
-c1, c2, c3 = st.columns(3)
-# 换手率计算 (假设流通盘约为 30M, 实际可根据 yf.info['floatShares'] 获取)
-float_shares = ticker_info.info.get('floatShares', 30000000)
-turnover_rate = (last_data['Volume'] / float_shares) * 100
+with right:
+    st.subheader("🤖 智能操作建议")
+    # 计算操作分数
+    score = 0
+    if "看涨吞没" in active_patterns: score += 2
+    if current_price < pred_low_price * 1.02: score += 2
+    if current_price > pred_high_price * 0.98: score -= 3
+    
+    # 渲染建议
+    if score >= 2:
+        st.success("### 建议：加仓/买入")
+    elif score <= -2:
+        st.error("### 建议：减仓/止盈")
+    else:
+        st.warning("### 建议：观望/持股")
+        
+    st.write("**当前识别形态/信号：**")
+    for p in active_patterns:
+        st.write(f"- {p}")
+    
+    st.write(f"**成交量比 (Vol Ratio):** {last_row['Volume']/last_row['Vol_MA5']:.2f}")
 
-c1.write(f"**今日估计换手率:** {turnover_rate:.2f}%")
-c2.write(f"**MA5/MA20 偏离度:** {((last_data['MA5']/last_data['MA20'])-1)*100:.2f}%")
-c3.write(f"**昨日收盘价:** ${last_data['Prev_Close']:.2f}")
-
-st.dataframe(data.tail(5).style.highlight_max(axis=0, subset=['Volume']))
+st.dataframe(df.tail(5))
