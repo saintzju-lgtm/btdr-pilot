@@ -12,3 +12,4 @@ scipy
 plotly
 arch
 matplotlib
+google-generativeai
