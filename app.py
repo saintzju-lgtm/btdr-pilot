@@ -15,7 +15,7 @@ def check_password():
     if not st.session_state.password_correct:
         st.set_page_config(page_title="身份验证", page_icon="🔒")
         st.title("🔒 BTDR 决策终端授权")
-        pwd = st.text_input("请输入访问授权码以开启系统", type="password")
+        pwd = st.text_input("请输入访问授权码", type="password")
         if st.button("进入系统"):
             if pwd == st.secrets.get("ACCESS_PASSWORD", "123456"):
                 st.session_state.password_correct = True
@@ -56,7 +56,7 @@ def get_btdr_data():
     reg_params = {'slope_h': m_h.coef_[0], 'inter_h': m_h.intercept_, 'slope_l': m_l.coef_[0], 'inter_l': m_l.intercept_}
     return fit_df, live_1m, float_shares, reg_params, realtime_v
 
-# --- 2. AI 决策引擎 (带结果保留) ---
+# --- 2. 深度 AI 决策引擎 (优化格式与逻辑) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
     if "DEEPSEEK_API_KEY" not in st.secrets:
@@ -66,13 +66,20 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
     try:
         client = OpenAI(api_key=st.secrets["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
         prompt = f"""
-        你是一名量化专家。审计 BTDR：现价${p_curr:.2f}, 偏离支撑{dev_sup:.2f}%, 换手率{turnover_str}, MA5 ${p_ma5:.2f}。
-        给出：1.空间定位；2.量价审计；3.建议[看多/看空/观望]及止损位。
-        最后一行格式: SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
+        你是一名严格的量化策略师。审计 BTDR：现价${p_curr:.2f}, 偏离支撑{dev_sup:.2f}%, 换手率{turnover_str}, MA5 ${p_ma5:.2f}。
+        
+        【输出要求】：
+        1. 格式清晰：使用Markdown二级标题。
+        2. 高亮逻辑：**加粗**分析过程中的核心关键点（如支撑有效性、量能背离等）。
+        3. 结构：
+           ## 1. 空间定位
+           ## 2. 量价审计
+           ## 3. 核心结论 (必须放在最后，给出明确的操作动作)
+        4. 评分输出：最后一行格式必须为 SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
         """
         response = client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "system", "content": "实战干货逻辑。"}, {"role": "user", "content": prompt}]
+            messages=[{"role": "system", "content": "你只讲实战逻辑，重点突出。"}, {"role": "user", "content": prompt}]
         )
         full_text = response.choices[0].message.content
         scores = [int(n) for n in re.findall(r"\d+", re.findall(r"SCORES:.*", full_text)[0])] if re.findall(r"SCORES:.*", full_text) else [50,50,50,50]
@@ -81,7 +88,7 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
         return f"❌ AI 审计失败: {str(e)}", [0, 0, 0, 0]
 
 # --- 3. 页面展示 ---
-st.set_page_config(layout="wide", page_title="BTDR 决策终端")
+st.set_page_config(layout="wide", page_title="BTDR 决策终端", page_icon="📈")
 st.title("🏹 BTDR 深度量化决策终端")
 
 try:
@@ -110,45 +117,72 @@ try:
 
     st.divider()
 
-    # UI 模块 2: AI 研判 (带结果保留)
+    # UI 模块 2: AI 研判
     col_text, col_radar = st.columns([1.6, 0.9])
     with col_text:
         st.subheader("🤖 AI 硬核形态研判")
-        # 自动加载缓存结果
+        
+        # 按钮美化：CSS 自定义
+        st.markdown("""
+            <style>
+            div.stButton > button:first-child {
+                background: linear-gradient(to right, #0052D4, #4364F7, #6FB1FC);
+                color: white;
+                border-radius: 8px;
+                border: none;
+                height: 3em;
+                font-weight: bold;
+                transition: 0.3s;
+            }
+            div.stButton > button:hover {
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                transform: translateY(-2px);
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        
         text, scores = get_ai_analysis_cached(round(curr_p, 2), round(last_hist['5日均值'], 2), f"{today_turnover:.1f}%", round(p_l_mid, 2), round(p_h_mid, 2))
         
-        if st.button("🔄 刷新 AI 实时审计 (消耗额度)", use_container_width=True):
+        if st.button("🔄 刷新 AI 实时审计报告 (消耗额度)", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
-        st.markdown(f"""<div style="background-color: rgba(0, 255, 255, 0.05); padding: 20px; border-radius: 12px; border-left: 6px solid #00CCCC; min-height: 250px;">{text}</div>""", unsafe_allow_html=True)
+            
+        st.markdown(f"""
+            <div style="background-color: rgba(31, 31, 31, 0.8); padding: 25px; border-radius: 12px; border-left: 6px solid #4364F7; line-height: 1.8;">
+                {text}
+            </div>
+        """, unsafe_allow_html=True)
 
     with col_radar:
-        fig_r = go.Figure(data=go.Scatterpolar(r=scores + [scores[0]], theta=['动能','支撑','换手','趋势','动能'], fill='toself', line=dict(color='#00CCCC')))
-        fig_r.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=320, margin=dict(l=40, r=40, t=30, b=30), paper_bgcolor="rgba(0,0,0,0)")
+        fig_r = go.Figure(data=go.Scatterpolar(r=scores + [scores[0]], theta=['动能','支撑','换手','趋势','动能'], fill='toself', line=dict(color='#4364F7', width=3)))
+        fig_r.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=350, margin=dict(l=40, r=40, t=30, b=30), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_r, use_container_width=True)
 
-    # UI 模块 3: K线主图 (MA5 标红 + 换手率柱状图)
-    st.subheader("🕒 实时监控主图 (垂直 MM/DD)")
+    # UI 模块 3: K线主图 (红涨绿跌适配)
+    st.subheader("🕒 实时监控主图 (红涨绿跌版)")
     fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
     p_df = hist_df.tail(20).copy()
     p_df['label'] = p_df.index.strftime('%m/%d')
     
-    # K线
-    fig_k.add_trace(go.Candlestick(x=p_df['label'], open=p_df['Open'], high=p_df['High'], low=p_df['Low'], close=p_df['Close'], name="K线"), row=1, col=1)
-    # MA5 改为红色并加粗
-    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['5日均值'], name="MA5 (Red)", line=dict(color='#FF0000', width=2)), row=1, col=1)
+    # K线：设置红涨绿跌
+    fig_k.add_trace(go.Candlestick(
+        x=p_df['label'], open=p_df['Open'], high=p_df['High'], low=p_df['Low'], close=p_df['Close'],
+        name="K线",
+        increasing_line_color='#FF3131', # 红色
+        decreasing_line_color='#00C805'  # 绿色
+    ), row=1, col=1)
     
-    # 换手率柱状图回归
-    colors = ['green' if (p_df['Close'].iloc[i] >= p_df['Open'].iloc[i]) else 'red' for i in range(len(p_df))]
-    fig_k.add_trace(go.Bar(x=p_df['label'], y=p_df['换手率_原始']*100, name="换手率%", marker_color=colors, opacity=0.7), row=2, col=1)
+    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['5日均值'], name="MA5 (Red)", line=dict(color='#FF3131', width=2.5)), row=1, col=1)
+    
+    # 柱状图：设置红涨绿跌
+    colors = ['#FF3131' if (p_df['Close'].iloc[i] >= p_df['Open'].iloc[i]) else '#00C805' for i in range(len(p_df))]
+    fig_k.add_trace(go.Bar(x=p_df['label'], y=p_df['换手率_原始']*100, name="换手率%", marker_color=colors, opacity=0.8), row=2, col=1)
     
     fig_k.update_xaxes(tickangle=-90, dtick=1)
     fig_k.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
-    fig_k.update_yaxes(title_text="Price", row=1, col=1)
-    fig_k.update_yaxes(title_text="Turnover%", row=2, col=1)
     st.plotly_chart(fig_k, use_container_width=True)
 
-    # UI 模块 4: 数据明细
+    # UI 模块 4: 数据明细 (表格内百分比已修正)
     st.subheader("📋 历史参考数据明细")
     show_df = hist_df.tail(15).copy()
     show_df.index = show_df.index.date
