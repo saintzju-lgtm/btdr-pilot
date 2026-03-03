@@ -55,7 +55,7 @@ def get_btdr_data():
     reg_params = {'slope_h': m_h.coef_[0], 'inter_h': m_h.intercept_, 'slope_l': m_l.coef_[0], 'inter_l': m_l.intercept_}
     return fit_df, live_1m, float_sh, reg_params, rt_v
 
-# --- 2. AI 决策引擎 (强化文本清晰度指令) ---
+# --- 2. AI 决策引擎 (强化指令：严禁删减内容，仅加粗高亮) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
     if "DEEPSEEK_API_KEY" not in st.secrets:
@@ -68,15 +68,15 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
         你是一名严谨的量化审计师。根据以下数据对 BTDR 进行形态审计：
         现价: ${p_curr:.2f}, MA5: ${p_ma5:.2f}, 偏离回归支撑: {dev_sup:.2f}%, 实时换手: {turnover_str}。
         
-        【输出指令】：
-        1. 严禁使用任何背景色或复杂的HTML布局。
-        2. 必须清晰列出 ## 1. 空间定位、## 2. 量价审计、## 3. 核心研判结论。
-        3. 对所有关键价格、关键位、操作建议（买入/卖出/观望）必须使用双星号 **加粗高亮**。
-        4. 最后一行格式为 SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
+        【重要指令 - 请严格执行】：
+        1. 输出包含三个板块：## 1. 空间定位、## 2. 量价审计、## 3. 核心研判结论。
+        2. **禁止简写或删减分析内容**：请提供详尽的逻辑推导和心理分析，每个板块不少于 3 句话。
+        3. **高亮关键字**：仅对关键数值（如 ${p_curr:.2f}）、核心支撑位、操作动词（如 **持币观望**、**分批买入**）、止损价位进行 **加粗**。
+        4. 最后一行必须单独输出分值，格式为 SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
         """
         response = client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "system", "content": "你只讲实战逻辑，重点必须加粗。"}, {"role": "user", "content": prompt}]
+            messages=[{"role": "system", "content": "你是一名资深交易员，擅长提供内容详实、逻辑严密的分析报告。"}, {"role": "user", "content": prompt}]
         )
         full_text = response.choices[0].message.content
         scores = [int(n) for n in re.findall(r"\d+", re.findall(r"SCORES:.*", full_text)[0])] if re.findall(r"SCORES:.*", full_text) else [50,50,50,50]
@@ -87,28 +87,22 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
 # --- 3. 页面展示 ---
 st.set_page_config(layout="wide", page_title="BTDR 决策终端", page_icon="🎯")
 
-# 全局 CSS：增强字体对比度和按钮样式
+# 全局 CSS 增强
 st.markdown("""
     <style>
-    /* 按钮样式优化 */
     div.stButton > button {
         background: linear-gradient(45deg, #0052D4, #6FB1FC);
         color: white; border: none; height: 40px; width: 100%; border-radius: 5px; font-weight: bold; font-size: 16px;
     }
-    /* 正文文字颜色增强 */
+    /* 强制正文颜色为纯白，字号加大 */
     .stMarkdown p, .stMarkdown li {
         color: #FFFFFF !important;
-        font-size: 16px !important;
-        line-height: 1.6 !important;
+        font-size: 17px !important;
+        line-height: 1.7 !important;
     }
-    /* 标题颜色增强 */
-    h2, h3 {
-        color: #6FB1FC !important;
-        font-weight: bold !important;
-        margin-top: 20px !important;
-    }
-    /* 去掉表格边框限制 */
-    .stTable { width: 100%; }
+    /* 标题颜色设为亮蓝，增加间距 */
+    h2 { color: #6FB1FC !important; font-weight: bold !important; margin-top: 30px !important; border-bottom: 1px solid #333; padding-bottom: 10px; }
+    h3 { color: #FFFFFF !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -119,13 +113,14 @@ try:
     last_h = hist_df.iloc[-1]
     curr_p = live_df['Close'].iloc[-1]
     
+    # 回归场景计算
     today_o = live_df.between_time('09:30', '16:00')['Open'].iloc[0] if not live_df.between_time('09:30', '16:00').empty else live_df['Open'].iloc[-1]
     ratio_o = (today_o - last_h['Close']) / last_h['Close']
     p_h_pred = last_h['Close'] * (1 + (reg['inter_h'] + reg['slope_h'] * ratio_o))
     p_l_pred = last_h['Close'] * (1 + (reg['inter_l'] + reg['slope_l'] * ratio_o))
     today_to = (rt_v / float_sh) * 100
 
-    # UI 1: 顶部状态
+    # UI 1: 实时指标与表格
     c1, c2 = st.columns([1, 1.5])
     with c1:
         st.subheader("📊 实时状态")
@@ -138,18 +133,18 @@ try:
 
     st.divider()
 
-    # UI 2: AI 解析区（无背景、无边框）
+    # UI 2: AI 解析区（纯净文字模式）
     col_t, col_r = st.columns([1.6, 0.9])
     with col_t:
-        st.subheader("🤖 AI 硬核形态研判")
+        st.subheader("🤖 AI 硬核形态研判 (审计模式)")
         
         text, scores = get_ai_analysis_cached(round(curr_p, 2), round(last_h['MA5'], 2), f"{today_to:.1f}%", round(p_l_pred, 2), round(p_h_pred, 2))
         
-        if st.button("🔄 刷新实时 AI 审计报告"):
+        if st.button("🔄 刷新实时 AI 审计报告 (强制更新)"):
             st.cache_data.clear()
             st.rerun()
             
-        # 直接显示 Markdown 文本，没有任何容器包裹
+        # 直接输出文字，不带任何边框容器
         st.markdown(text)
 
     with col_r:
@@ -176,7 +171,7 @@ try:
     fig_k.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig_k, use_container_width=True)
 
-    # UI 4: 数据明细
+    # UI 4: 历史明细
     st.subheader("📋 历史数据参考")
     show_df = hist_df.tail(15).copy()
     show_df.index = show_df.index.date
