@@ -55,7 +55,7 @@ def get_btdr_data():
     reg_params = {'slope_h': m_h.coef_[0], 'inter_h': m_h.intercept_, 'slope_l': m_l.coef_[0], 'inter_l': m_l.intercept_}
     return fit_df, live_1m, float_sh, reg_params, rt_v
 
-# --- 2. AI 决策引擎 (强化指令：严禁删减内容，仅加粗高亮) ---
+# --- 2. AI 决策引擎 (强化全内容输出与黑色字体指令) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
     if "DEEPSEEK_API_KEY" not in st.secrets:
@@ -65,18 +65,21 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
     try:
         client = OpenAI(api_key=st.secrets["DEEPSEEK_API_KEY"], base_url="https://api.deepseek.com")
         prompt = f"""
-        你是一名严谨的量化审计师。根据以下数据对 BTDR 进行形态审计：
-        现价: ${p_curr:.2f}, MA5: ${p_ma5:.2f}, 偏离回归支撑: {dev_sup:.2f}%, 实时换手: {turnover_str}。
-        
-        【重要指令 - 请严格执行】：
-        1. 输出包含三个板块：## 1. 空间定位、## 2. 量价审计、## 3. 核心研判结论。
-        2. **禁止简写或删减分析内容**：请提供详尽的逻辑推导和心理分析，每个板块不少于 3 句话。
-        3. **高亮关键字**：仅对关键数值（如 ${p_curr:.2f}）、核心支撑位、操作动词（如 **持币观望**、**分批买入**）、止损价位进行 **加粗**。
-        4. 最后一行必须单独输出分值，格式为 SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
+        你是一名资深量化交易员。请针对 BTDR 进行深度形态审计。
+        当前数据：现价 ${p_curr:.2f}，MA5 ${p_ma5:.2f}，偏离回归支撑位 {dev_sup:.2f}%，换手率 {turnover_str}。
+
+        【输出规范】：
+        1. 必须保留所有详细的逻辑分析，禁止删减。
+        2. 结构必须包含：
+           ## 1. 空间定位
+           ## 2. 量价审计
+           ## 3. 核心研判结论
+        3. 对关键数值、核心位、操作结论（如 **持币观望**、**止损价**）进行 **加粗** 高亮。
+        4. 语气要专业且直接。最后一行格式为 SCORES: 动能=X, 支撑=X, 换手=X, 趋势=X
         """
         response = client.chat.completions.create(
             model="deepseek-chat",
-            messages=[{"role": "system", "content": "你是一名资深交易员，擅长提供内容详实、逻辑严密的分析报告。"}, {"role": "user", "content": prompt}]
+            messages=[{"role": "system", "content": "你提供内容详实、逻辑严密的专业分析报告，重点突出。"}, {"role": "user", "content": prompt}]
         )
         full_text = response.choices[0].message.content
         scores = [int(n) for n in re.findall(r"\d+", re.findall(r"SCORES:.*", full_text)[0])] if re.findall(r"SCORES:.*", full_text) else [50,50,50,50]
@@ -85,24 +88,32 @@ def get_ai_analysis_cached(p_curr, p_ma5, turnover_str, p_low, p_high):
         return f"❌ AI 调用失败: {str(e)}", [0, 0, 0, 0]
 
 # --- 3. 页面展示 ---
-st.set_page_config(layout="wide", page_title="BTDR 决策终端", page_icon="🎯")
+st.set_page_config(layout="wide", page_title="BTDR 决策终端", page_icon="📈")
 
-# 全局 CSS 增强
+# 核心 CSS 优化：强制黑字，移除所有背景和边框干扰
 st.markdown("""
     <style>
+    /* 页面背景设为纯白/浅灰白以适配黑字 */
+    .main { background-color: #FFFFFF !important; }
+    
+    /* 按钮样式 */
     div.stButton > button {
-        background: linear-gradient(45deg, #0052D4, #6FB1FC);
-        color: white; border: none; height: 40px; width: 100%; border-radius: 5px; font-weight: bold; font-size: 16px;
+        background-color: #000000; color: white; border-radius: 5px; height: 45px; width: 100%; font-weight: bold;
     }
-    /* 强制正文颜色为纯白，字号加大 */
-    .stMarkdown p, .stMarkdown li {
-        color: #FFFFFF !important;
-        font-size: 17px !important;
-        line-height: 1.7 !important;
+    
+    /* 强制 AI 研判文字为黑色，字号清晰 */
+    .ai-text-container {
+        color: #000000 !important;
+        font-size: 18px !important;
+        line-height: 1.8 !important;
+        font-family: sans-serif;
     }
-    /* 标题颜色设为亮蓝，增加间距 */
-    h2 { color: #6FB1FC !important; font-weight: bold !important; margin-top: 30px !important; border-bottom: 1px solid #333; padding-bottom: 10px; }
-    h3 { color: #FFFFFF !important; }
+    
+    /* 标题颜色与对齐 */
+    h2 { color: #003366 !important; font-weight: bold !important; border-bottom: 2px solid #EEE; padding-bottom: 8px; margin-top: 30px !important; }
+    
+    /* 修正表格显示 */
+    .stTable { color: black !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -113,49 +124,49 @@ try:
     last_h = hist_df.iloc[-1]
     curr_p = live_df['Close'].iloc[-1]
     
-    # 回归场景计算
+    # 回归计算
     today_o = live_df.between_time('09:30', '16:00')['Open'].iloc[0] if not live_df.between_time('09:30', '16:00').empty else live_df['Open'].iloc[-1]
     ratio_o = (today_o - last_h['Close']) / last_h['Close']
     p_h_pred = last_h['Close'] * (1 + (reg['inter_h'] + reg['slope_h'] * ratio_o))
     p_l_pred = last_h['Close'] * (1 + (reg['inter_l'] + reg['slope_l'] * ratio_o))
     today_to = (rt_v / float_sh) * 100
 
-    # UI 1: 实时指标与表格
+    # UI 1: 实时数据
     c1, c2 = st.columns([1, 1.5])
     with c1:
         st.subheader("📊 实时状态")
         m1, m2 = st.columns(2)
-        m1.metric("当前价", f"${curr_p:.2f}", f"{(curr_p/last_h['Close']-1):.2%}")
+        m1.metric("当前成交价", f"${curr_p:.2f}", f"{(curr_p/last_h['Close']-1):.2%}")
         m2.markdown(f"**实时换手率**\n### :{'red' if today_to > 15 else 'orange' if today_to > 8 else 'green'}[{today_to:.2f}%]")
     with c2:
         st.subheader("📍 场景回归预测")
-        st.table(pd.DataFrame({"场景": ["中性回归", "乐观 (+6%)", "悲观 (-6%)"], "最高点": [p_h_pred, p_h_pred*1.06, p_h_pred*0.94], "最低点": [p_l_pred, p_l_pred*1.06, p_l_pred*0.94]}).style.format(precision=2))
+        st.table(pd.DataFrame({"场景描述": ["中性回归", "乐观 (+6%)", "悲观 (-6%)"], "最高点": [p_h_pred, p_h_pred*1.06, p_h_pred*0.94], "最低点": [p_l_pred, p_l_pred*1.06, p_l_pred*0.94]}).style.format(precision=2))
 
     st.divider()
 
-    # UI 2: AI 解析区（纯净文字模式）
+    # UI 2: AI 解析区（纯净模式，强制黑字）
     col_t, col_r = st.columns([1.6, 0.9])
     with col_t:
         st.subheader("🤖 AI 硬核形态研判 (审计模式)")
         
-        text, scores = get_ai_analysis_cached(round(curr_p, 2), round(last_h['MA5'], 2), f"{today_to:.1f}%", round(p_l_pred, 2), round(p_h_pred, 2))
+        text, scores = get_ai_analysis_cached(round(curr_p, 2), round(last_h['MA5'], 2), f"{today_to:.1f}%", round(p_l_pred, 2), round(p_h_mid if 'p_h_mid' in locals() else p_h_pred, 2))
         
-        if st.button("🔄 刷新实时 AI 审计报告 (强制更新)"):
+        if st.button("🔄 刷新实时研判报告 (点击更新)"):
             st.cache_data.clear()
             st.rerun()
             
-        # 直接输出文字，不带任何边框容器
-        st.markdown(text)
+        # 使用 div 包装但仅用于强制颜色，不带边框背景
+        st.markdown(f'<div class="ai-text-container">{text}</div>', unsafe_allow_html=True)
 
     with col_r:
-        fig_radar = go.Figure(data=go.Scatterpolar(r=scores + [scores[0]], theta=['动能','支撑','换手','趋势','动能'], fill='toself', line=dict(color='#6FB1FC', width=3)))
+        fig_radar = go.Figure(data=go.Scatterpolar(r=scores + [scores[0]], theta=['动能','支撑','换手','趋势','动能'], fill='toself', line=dict(color='#003366', width=3)))
         fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), height=350, margin=dict(l=40, r=40, t=30, b=30), paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig_radar, use_container_width=True)
 
     st.divider()
 
-    # UI 3: K线主图 (阳红阴绿)
-    st.subheader("🕒 实时监控主图 (阳红阴绿)")
+    # UI 3: K线图 (红涨绿跌)
+    st.subheader("🕒 实时监控主图 (红涨绿跌)")
     fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
     p_df = hist_df.tail(20).copy()
     p_df['label'] = p_df.index.strftime('%m/%d')
@@ -168,11 +179,11 @@ try:
     fig_k.add_trace(go.Bar(x=p_df['label'], y=p_df['换手率_原始']*100, name="Turnover%", marker_color=vol_colors, opacity=0.8), row=2, col=1)
     
     fig_k.update_xaxes(tickangle=-90, dtick=1)
-    fig_k.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
+    fig_k.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig_k, use_container_width=True)
 
-    # UI 4: 历史明细
-    st.subheader("📋 历史数据参考")
+    # UI 4: 明细表
+    st.subheader("📋 历史参考数据明细")
     show_df = hist_df.tail(15).copy()
     show_df.index = show_df.index.date
     for c in ['今开比例', '最高比例', '最低比例']:
