@@ -13,3 +13,4 @@ plotly
 arch
 matplotlib
 google-generativeai
+openai
