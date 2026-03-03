@@ -51,7 +51,7 @@ def get_btdr_final_pro_engine():
     hist['最高比例'] = (hist['High'] - hist['昨收']) / hist['昨收']
     hist['最低比例'] = (hist['Low'] - hist['昨收']) / hist['昨收']
     
-    # 统一换手率计算公式 (基于当日/历史Volume / 最新Float)
+    # 统一换手率计算公式
     hist['换手率_计算'] = (hist['Volume'] / current_float)
     hist['MA5'] = hist['Close'].rolling(5).mean()
     
@@ -60,7 +60,7 @@ def get_btdr_final_pro_engine():
     iv = info.get('impliedVolatility', 0)
     pcr = info.get('putCallRatio', 0)
     
-    # 回归模型训练 (中性预测基准)
+    # 回归模型训练
     fit_df = hist.dropna()
     X = fit_df[['今开比例']].values
     m_h = LinearRegression().fit(X, fit_df['最高比例'].values)
@@ -69,7 +69,7 @@ def get_btdr_final_pro_engine():
     
     return fit_df, current_float, reg_params, rt_v, inst_cost, iv, pcr
 
-# --- 2. AI 审计引擎 (集成期权、庄家意图与结构化分析) ---
+# --- 2. AI 审计引擎 (改用 deepseek-reasoner) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ai_audit_ultimate(p_curr, p_ma5, turnover, p_low, inst_cost, iv, pcr):
     if "DEEPSEEK_API_KEY" not in st.secrets:
@@ -95,7 +95,7 @@ def get_ai_audit_ultimate(p_curr, p_ma5, turnover, p_low, inst_cost, iv, pcr):
         要求：全文黑字，重点**加粗**高亮。禁止数据幻觉。
         """
         response = client.chat.completions.create(
-            model="deepseek-chat",
+            model="deepseek-reasoner",  # 💎 已改为深度思考模型
             messages=[{"role": "system", "content": "实战严密逻辑，揭秘筹码真相。"}, {"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content.strip()
@@ -111,18 +111,16 @@ st.markdown("""<style>
     div.stButton > button:hover { background-color: #0044BB; color: #FFF; }
 </style>""", unsafe_allow_html=True)
 
-st.title("🏹 BTDR 深度量化决策终端")
+st.title("🏹 BTDR 深度量化决策终端 (Reasoner版)")
 
 try:
     hist_df, dynamic_float, reg, rt_v, inst_cost, iv, pcr = get_btdr_final_pro_engine()
     last_h = hist_df.iloc[-1]
     curr_p = last_h['Close']
     
-    # 计算实时换手率
     today_to = (rt_v / dynamic_float) * 100
     ratio_o = (hist_df['Open'].iloc[-1] - last_h['昨收']) / last_h['昨收']
     
-    # 场景回归预测 (逻辑不变)
     p_h_mid = last_h['昨收'] * (1 + (reg['inter_h'] + reg['slope_h'] * ratio_o))
     p_l_mid = last_h['昨收'] * (1 + (reg['inter_l'] + reg['slope_l'] * ratio_o))
 
@@ -144,8 +142,8 @@ try:
 
     st.divider()
 
-    # UI 2: AI 解析
-    st.subheader("🤖 DeepSeek 筹码意图与期权审计报告")
+    # UI 2: AI 解析 (使用 Reasoner 模型)
+    st.subheader("🤖 DeepSeek-R1 筹码意图与期权审计")
     if st.button("🔄 刷新 AI 深度审计报告"):
         st.cache_data.clear()
         st.rerun()
@@ -156,7 +154,7 @@ try:
     st.divider()
 
     # UI 3: K线主图 (阳红阴绿 + MA5红线)
-    st.subheader("🕒 走势主图 (红色 MA5 生命线)")
+    st.subheader("🕒 走势主图 (红色 MA5 生命周期)")
     fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
     p_df = hist_df.tail(20).copy()
     p_df['label'] = p_df.index.strftime('%m/%d')
@@ -170,7 +168,7 @@ try:
     fig_k.update_layout(height=550, xaxis_rangeslider_visible=False, template="plotly_white")
     st.plotly_chart(fig_k, use_container_width=True)
 
-    # UI 4: 明细表 (已实现今日换手率对齐)
+    # UI 4: 明细表
     st.subheader("📋 历史数据明细 (换手率已同步)")
     show_df = hist_df.tail(15).copy()
     show_df.index = show_df.index.date
