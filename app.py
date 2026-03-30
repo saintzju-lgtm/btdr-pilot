@@ -9,7 +9,7 @@ from openai import OpenAI
 from scipy.stats import norm
 from scipy.optimize import newton
 
-# --- 0. 授权验证 ---
+# --- 0. 授权验证 (保持不变) ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
@@ -63,7 +63,7 @@ def get_btdr_quant_engine():
     mfr = pd.Series(pos_flow).rolling(14).sum() / pd.Series(neg_flow).rolling(14).sum()
     hist['MFI'] = 100 - (100 / (1 + mfr.values))
     
-    # 布林带
+    # 布林带计算
     hist['MA20'] = hist['Close'].rolling(20).mean()
     hist['Std20'] = hist['Close'].rolling(20).std()
     hist['Upper'] = hist['MA20'] + (hist['Std20'] * 2)
@@ -115,21 +115,30 @@ try:
     p_h_mid = last_h['昨收'] * (1 + (reg['inter_h'] + reg['slope_h'] * ratio_o))
     p_l_mid = last_h['昨收'] * (1 + (reg['inter_l'] + reg['slope_l'] * ratio_o))
 
-    # --- 第一阶段：数据展示 (最前面) ---
+    # --- 第一阶段：数据展示 (看板增强实时 BOLL 数值) ---
     c1, c2 = st.columns([1, 1.5])
     with c1:
         st.subheader("📊 实时量化看板")
         st.metric("现价", f"${curr_p:.2f}", f"{(curr_p/last_h['昨收']-1):.2%}")
-        st.write(f"实时换手率: **{today_to:.2f}%**")
-        st.write(f"机构成本锚点: **${inst_cost:.2f}**")
-        st.write(f"资金流向 (MFI): **{mfi_val:.2f}**")
-        st.write(f"期权隐波 (IV): **{f'{iv:.2%}' if iv else 'N/A'}**")
         
+        # 实时指标数值
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            st.write(f"实时换手: **{today_to:.2f}%**")
+            st.write(f"资金流 MFI: **{mfi_val:.2f}**")
+            st.write(f"期权 IV: **{f'{iv:.2%}' if iv else 'N/A'}**")
+        with col_b2:
+            st.write(f"BOLL 上轨: **${last_h['Upper']:.2f}**")
+            st.write(f"BOLL 中轨: **${last_h['MA20']:.2f}**")
+            st.write(f"BOLL 下轨: **${last_h['Lower']:.2f}**")
+        
+        st.divider()
         test_df = hist_df.tail(60).copy()
         test_df['pred_l'] = test_df['昨收'] * (1 + (reg['inter_l'] + reg['slope_l'] * test_df['今开比例']))
         hits = test_df[test_df['Low'] <= test_df['pred_l']].dropna()
         win_rate = (hits['Close'].shift(-1) > hits['Close']).sum() / len(hits) if len(hits) > 0 else 0
-        st.write(f"支撑位回测胜率: **{win_rate:.1%}**")
+        st.write(f"回归支撑位回测胜率: **{win_rate:.1%}**")
+        st.write(f"机构成本锚点: **${inst_cost:.2f}**")
 
     with c2:
         st.subheader("📍 场景回归预测")
@@ -139,21 +148,29 @@ try:
             "支撑位(下限)": [p_l_mid*1.06, p_l_mid, p_l_mid*0.94]
         }).style.format(precision=2))
 
-    # --- 第二阶段：图表与明细 ---
+    # --- 第二阶段：图表 (加深布林带颜色) ---
     st.divider()
-    st.subheader("🕒 走势主图 (MA5 + 布林带 + 换手色标)")
+    st.subheader("🕒 走势主图 (MA5 + 增强布林带 + 换手色标)")
     fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3])
-    p_df = hist_df.tail(30).copy()
+    p_df = hist_df.tail(40).copy() # 稍微增加点周期看布林趋势
     p_df['label'] = p_df.index.strftime('%m/%d')
     
-    fig_k.add_trace(go.Candlestick(x=p_df['label'], open=p_df['Open'], high=p_df['High'], low=p_df['Low'], close=p_df['Close'], name="K线", increasing_line_color='#E53935', decreasing_line_color='#43A047'), row=1, col=1)
-    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['MA5'], name="MA5", line=dict(color='#1E88E5', width=2)), row=1, col=1)
-    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['Upper'], line=dict(color='rgba(150,150,150,0.1)'), showlegend=False), row=1, col=1)
-    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['Lower'], line=dict(color='rgba(150,150,150,0.1)'), fill='tonexty', fillcolor='rgba(150,150,150,0.05)', name="布林带"), row=1, col=1)
+    # 1. 布林带 (填充色和边界加深)
+    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['Upper'], line=dict(color='rgba(100, 149, 237, 0.4)', width=1), name="Upper", showlegend=False), row=1, col=1)
+    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['Lower'], line=dict(color='rgba(100, 149, 237, 0.4)', width=1), fill='tonexty', fillcolor='rgba(100, 149, 237, 0.15)', name="BOLL 通道"), row=1, col=1)
+    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['MA20'], line=dict(color='rgba(100, 149, 237, 0.6)', dash='dash', width=1), name="BOLL Median"), row=1, col=1)
     
+    # 2. K线
+    fig_k.add_trace(go.Candlestick(x=p_df['label'], open=p_df['Open'], high=p_df['High'], low=p_df['Low'], close=p_df['Close'], name="K线", increasing_line_color='#E53935', decreasing_line_color='#43A047'), row=1, col=1)
+    
+    # 3. MA5
+    fig_k.add_trace(go.Scatter(x=p_df['label'], y=p_df['MA5'], name="MA5", line=dict(color='#FF9800', width=2)), row=1, col=1)
+    
+    # 4. 换手率柱
     vol_colors = ['#E53935' if (p_df['Close'].iloc[i] >= p_df['Open'].iloc[i]) else '#43A047' for i in range(len(p_df))]
     fig_k.add_trace(go.Bar(x=p_df['label'], y=p_df['换手率_计算']*100, name="换手率%", marker_color=vol_colors), row=2, col=1)
-    fig_k.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white", margin=dict(l=10, r=10, t=10, b=10))
+    
+    fig_k.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_white", margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig_k, use_container_width=True)
 
     st.subheader("📋 历史明细 (集成 MFI)")
@@ -162,16 +179,15 @@ try:
     show_df['换手率'] = (show_df['换手率_计算'] * 100).map('{:.2f}%'.format)
     st.dataframe(show_df[['Open', 'High', 'Low', 'Close', '换手率', 'MFI', 'MA5']].style.format(precision=2), use_container_width=True)
 
-    # --- 第三阶段：AI 研判 (最后面，默认不刷新) ---
+    # --- 第三阶段：AI 研判 (最后面，手动刷新) ---
     st.divider()
     st.subheader("🔬 DeepSeek-R1 量化逻辑审计")
     
-    # 使用 session_state 存储审计报告，防止页面其他交互导致报告消失
     if "audit_report" not in st.session_state:
-        st.session_state.audit_report = "点击下方按钮生成深度逻辑审计结果..."
+        st.session_state.audit_report = "等待指令：请点击下方按钮开始深度逻辑对冲分析..."
 
-    if st.button("🚀 生成/刷新深度审计"):
-        with st.spinner("DeepSeek 正在对冲逻辑..."):
+    if st.button("🚀 生成/刷新深度审计报告"):
+        with st.spinner("AI 正在解析多维博弈逻辑..."):
             st.session_state.audit_report = get_ai_reasoner_audit(curr_p, last_h['MA5'], today_to, p_l_mid, p_h_mid, inst_cost, iv, pcr, mfi_val)
     
     st.info(st.session_state.audit_report)
