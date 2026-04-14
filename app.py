@@ -43,12 +43,12 @@ def get_stock_list():
 def fetch_technical_analysis(stock_codes):
     """抓取历史K线并计算 MA20 和 MACD（加入防限流机制）"""
     tech_forms = {}
-    # 核心优化1：只取最近100天的历史数据，极大减轻接口压力和传输时间
+    # 只取最近100天的历史数据，极大减轻接口压力和传输时间
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
     
     for code in stock_codes:
         try:
-            # 核心优化2：加入 0.2 秒的微小延迟，防止并发请求被东方财富防火墙拦截
+            # 加入 0.2 秒的微小延迟，防止并发请求被拦截
             time.sleep(0.2) 
             
             df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
@@ -98,7 +98,6 @@ def fetch_technical_analysis(stock_codes):
                 
             tech_forms[code] = " | ".join(form_labels)
         except Exception as e:
-            # 如果依然失败，输出具体的错误代码方便排查
             tech_forms[code] = "接口限流/失败"
             
     return tech_forms
@@ -166,7 +165,8 @@ if "stocks" not in st.session_state:
     st.session_state.stocks = load_config()
 
 st.sidebar.header("🕹️ 操作控制")
-if st.sidebar.button("🔄 立即刷新数据", use_container_width=True):
+# 替换点 1：将 use_container_width=True 改为 width="stretch"
+if st.sidebar.button("🔄 立即刷新数据", width="stretch"):
     st.cache_data.clear() # 手动点击时清除一下缓存，强制拉取最新
     st.rerun()
 
@@ -215,7 +215,7 @@ st.title("📊 A股专业量化监控看板 (盘口+日线共振)")
 # 设置局部刷新的时间间隔（如果关闭则为 None）
 refresh_interval = 60 if auto_refresh else None
 
-# 核心优化3：使用 @st.fragment 隔离刷新区域。这使得整个页面不再灰屏！
+# 使用 @st.fragment 隔离刷新区域。这使得整个页面不再灰屏！
 @st.fragment(run_every=refresh_interval)
 def render_dashboard():
     df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
@@ -241,9 +241,10 @@ def render_dashboard():
         df_display['量比'] = df_display['量比'].apply(lambda x: f"{x:.2f}")
         df_display['实时价格'] = df_display['实时价格'].apply(lambda x: f"¥ {x:.2f}")
 
+        # 替换点 2：将 use_container_width=True 改为 width="stretch"
         st.dataframe(
             df_display, 
-            use_container_width=True, 
+            width="stretch", 
             hide_index=True,
             column_config={
                 "日线技术形态": st.column_config.TextColumn(width="medium"),
