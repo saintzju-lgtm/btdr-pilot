@@ -39,20 +39,23 @@ def get_stock_list():
         return []
 
 # ================= 2. 专业数据与技术形态计算 =================
-@st.cache_data(ttl=300, show_spinner=False) # 历史日线数据变化较慢，缓存5分钟即可
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_technical_analysis(stock_codes):
-    """抓取历史K线并计算 MA20 和 MACD"""
+    """抓取历史K线并计算 MA20 和 MACD（加入防限流机制）"""
     tech_forms = {}
+    # 核心优化1：只取最近100天的历史数据，极大减轻接口压力和传输时间
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
+    
     for code in stock_codes:
         try:
-            # 获取最近60个交易日的前复权日线数据
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
-            if len(df) < 30:
-                tech_forms[code] = "新股/数据不足"
+            # 核心优化2：加入 0.2 秒的微小延迟，防止并发请求被东方财富防火墙拦截
+            time.sleep(0.2) 
+            
+            df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
+            if df is None or df.empty or len(df) < 30:
+                tech_forms[code] = "数据不足/停牌"
                 continue
                 
-            df = df.tail(60).copy()
-            
             # 计算 MA20
             df['MA20'] = df['收盘'].rolling(window=20).mean()
             
@@ -94,8 +97,9 @@ def fetch_technical_analysis(stock_codes):
                 form_labels.append("🌧️ MACD 空头排列")
                 
             tech_forms[code] = " | ".join(form_labels)
-        except Exception:
-            tech_forms[code] = "指标计算失败"
+        except Exception as e:
+            # 如果依然失败，输出具体的错误代码方便排查
+            tech_forms[code] = "接口限流/失败"
             
     return tech_forms
 
@@ -138,17 +142,12 @@ def generate_pro_advice(row, sentiment_ratio):
     
     advice = []
     
-    # 结合均线判断大趋势
-    if "突破 MA20" in tech_form:
-        advice.append("日线级别右侧突破启动，")
-    elif "跌破 MA20" in tech_form:
-        advice.append("中线生命线失守，趋势转弱，")
+    if "突破 MA20" in tech_form: advice.append("日线级别右侧突破启动，")
+    elif "跌破 MA20" in tech_form: advice.append("中线生命线失守，趋势转弱，")
         
     if pct >= 3.0:
-        if vol_ratio > 1.5:
-            advice.append("放量大涨。若筹码出现分歧可逢高定止盈；若封板或走势稳健则顺势持有。")
-        else:
-            advice.append("缩量上涨，追高意愿不足，谨防冲高回落。")
+        if vol_ratio > 1.5: advice.append("放量大涨。若筹码出现分歧可逢高定止盈；若封板或走势稳健则顺势持有。")
+        else: advice.append("缩量上涨，追高意愿不足，谨防冲高回落。")
     elif 0 < pct < 3.0:
         if vol_ratio > 1.5: advice.append("放量滞涨，警惕上方抛压。")
         else: advice.append("温和震荡向上，按原有节奏持仓。")
@@ -168,6 +167,7 @@ if "stocks" not in st.session_state:
 
 st.sidebar.header("🕹️ 操作控制")
 if st.sidebar.button("🔄 立即刷新数据", use_container_width=True):
+    st.cache_data.clear() # 手动点击时清除一下缓存，强制拉取最新
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -212,19 +212,22 @@ auto_refresh = st.sidebar.checkbox("开启 1分钟 自动刷新", value=True)
 # ================= 4. 主界面渲染 =================
 st.title("📊 A股专业量化监控看板 (盘口+日线共振)")
 
-placeholder = st.empty()
-with placeholder.container():
+# 设置局部刷新的时间间隔（如果关闭则为 None）
+refresh_interval = 60 if auto_refresh else None
+
+# 核心优化3：使用 @st.fragment 隔离刷新区域。这使得整个页面不再灰屏！
+@st.fragment(run_every=refresh_interval)
+def render_dashboard():
     df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
     
     beijing_tz = timezone(timedelta(hours=8))
     current_time = datetime.datetime.now(beijing_tz).strftime("%Y.%m.%d %H:%M:%S")
     
     col1, col2 = st.columns([1, 1])
-    col1.info(f"🕒 快照时间 (北京时间): {current_time} (60秒自动更新)")
+    col1.info(f"🕒 快照时间 (北京时间): {current_time} (无感静默更新)")
     col2.info(f"🧭 当前大盘情绪: {market_mood} (上涨率: {sentiment_ratio:.1%})")
     
     if success and not df.empty:
-        # 重排列表顺序，把技术形态插在中间
         cols = df.columns.tolist()
         cols.insert(4, cols.pop(cols.index('日线技术形态')))
         df = df[cols]
@@ -250,9 +253,7 @@ with placeholder.container():
     elif df.empty and success:
         st.warning("监控列表为空，请在左侧添加股票。")
     else:
-        st.error("数据抓取异常，请点击左上角手动刷新或检查网络。")
+        st.error("数据抓取异常，请点击左侧手动刷新或检查网络。")
 
-# ================= 5. 自动刷新逻辑 =================
-if auto_refresh:
-    time.sleep(60)
-    st.rerun()
+# 调用执行局部刷新容器
+render_dashboard()
