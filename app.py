@@ -6,23 +6,29 @@ import datetime
 from datetime import timezone, timedelta
 import json
 import os
-import random
 
-# ================= 1. 基础配置与 CSS 魔法 =================
+# ================= 1. 基础配置与终极 CSS 魔法 =================
 st.set_page_config(page_title="A股专业量化监控看板", page_icon="📈", layout="wide")
 CONFIG_FILE = "stocks_config.json"
 
-# 注入 CSS 强制消除右上角 Running 状态和灰屏动画，实现真正无感
+# 终极 CSS：强制干掉 Streamlit 所有的加载动画、变灰和透明度变化
 st.markdown(
     """
     <style>
-        /* 隐藏右上角的部署、Running 和 Stop 状态指示器 */
-        [data-testid="stStatusWidget"] {
-            display: none !important;
-        }
+        /* 隐藏右上角的部署和 Running 状态指示器 */
+        [data-testid="stStatusWidget"] { display: none !important; }
         /* 隐藏顶部红色的加载进度条 */
-        .stApp > header {
-            display: none !important;
+        .stApp > header { display: none !important; }
+        
+        /* 🔥 核心魔法：强制覆盖刷新时组件变灰 (stale) 的特效 🔥 */
+        div[data-stale="true"], div[data-stale="true"] * {
+            opacity: 1 !important;
+            transition: none !important;
+            pointer-events: auto !important;
+        }
+        /* 强制表格永远保持 100% 不透明 */
+        [data-testid="stDataFrame"] {
+            opacity: 1 !important;
         }
     </style>
     """,
@@ -57,58 +63,53 @@ def get_stock_list():
         return []
 
 # ================= 2. 专业数据与技术形态计算 =================
-# 核心优化：单只股票独立缓存，且缓存12小时！因为日线级别一天只用算一次
 @st.cache_data(ttl=43200, show_spinner=False) 
 def fetch_single_stock_tech(code):
-    """单独抓取单只股票的历史数据，最大程度防封禁"""
+    """单独抓取日线：移除死亡重试，做到 Fail-Fast (快速失败)，绝不卡顿页面"""
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
-    
-    for attempt in range(3):
-        try:
-            time.sleep(random.uniform(0.3, 0.8)) # 极短的随机休眠，模拟真人
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
+    try:
+        # 只尝试 1 次，没有任何 time.sleep 阻塞
+        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
+        
+        if df is not None and not df.empty and len(df) >= 30:
+            df['MA20'] = df['收盘'].rolling(window=20).mean()
+            exp1 = df['收盘'].ewm(span=12, adjust=False).mean()
+            exp2 = df['收盘'].ewm(span=26, adjust=False).mean()
+            df['DIF'] = exp1 - exp2
+            df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
+            df['MACD'] = 2 * (df['DIF'] - df['DEA'])
             
-            if df is not None and not df.empty and len(df) >= 30:
-                df['MA20'] = df['收盘'].rolling(window=20).mean()
-                exp1 = df['收盘'].ewm(span=12, adjust=False).mean()
-                exp2 = df['收盘'].ewm(span=26, adjust=False).mean()
-                df['DIF'] = exp1 - exp2
-                df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
-                df['MACD'] = 2 * (df['DIF'] - df['DEA'])
-                
-                latest, prev = df.iloc[-1], df.iloc[-2]
-                form_labels = []
-                
-                # MA20 判定
-                if latest['收盘'] > latest['MA20'] and prev['收盘'] <= prev['MA20']:
-                    form_labels.append("🔥 强势突破 MA20")
-                elif latest['收盘'] < latest['MA20'] and prev['收盘'] >= prev['MA20']:
-                    form_labels.append("⚠️ 跌破 MA20 支撑")
-                elif latest['收盘'] > latest['MA20']:
-                    form_labels.append("🟢 站稳 MA20 之上")
-                else:
-                    form_labels.append("🔴 受压于 MA20 之下")
-                    
-                # MACD 判定
-                dif, dea, prev_dif, prev_dea = latest['DIF'], latest['DEA'], prev['DIF'], prev['DEA']
-                loc = "零上" if dif > 0 else "零下"
-                if dif > dea and prev_dif <= prev_dea:
-                    form_labels.append(f"📈 MACD {loc}金叉")
-                elif dif < dea and prev_dif >= prev_dea:
-                    form_labels.append(f"📉 MACD {loc}死叉")
-                elif dif > dea:
-                    form_labels.append("☀️ MACD 多头排列")
-                else:
-                    form_labels.append("🌧️ MACD 空头排列")
-                    
-                return " | ".join(form_labels)
-        except Exception:
-            time.sleep(1)
-            continue
+            latest, prev = df.iloc[-1], df.iloc[-2]
+            form_labels = []
             
-    return None # 只有3次都失败才返回None，交由外层处理
+            if latest['收盘'] > latest['MA20'] and prev['收盘'] <= prev['MA20']:
+                form_labels.append("🔥 突破 MA20")
+            elif latest['收盘'] < latest['MA20'] and prev['收盘'] >= prev['MA20']:
+                form_labels.append("⚠️ 跌破 MA20")
+            elif latest['收盘'] > latest['MA20']:
+                form_labels.append("🟢 站稳 MA20")
+            else:
+                form_labels.append("🔴 受压 MA20")
+                
+            dif, dea, prev_dif, prev_dea = latest['DIF'], latest['DEA'], prev['DIF'], prev['DEA']
+            loc = "零上" if dif > 0 else "零下"
+            if dif > dea and prev_dif <= prev_dea:
+                form_labels.append(f"📈 MACD {loc}金叉")
+            elif dif < dea and prev_dif >= prev_dea:
+                form_labels.append(f"📉 MACD {loc}死叉")
+            elif dif > dea:
+                form_labels.append("☀️ 多头排列")
+            else:
+                form_labels.append("🌧️ 空头排列")
+                
+            return " | ".join(form_labels)
+        else:
+            return "⚠️ 接口无数据"
+    except Exception:
+        # 一旦报错立刻返回，绝不拖泥带水让页面变灰
+        return "⚠️ 日线接口限流"
 
-@st.cache_data(ttl=10, show_spinner=False) # 盘口实时数据缓存 10 秒
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_realtime_data_pro(stock_map):
     """只抓取快照数据，速度极快"""
     try:
@@ -155,11 +156,9 @@ def generate_pro_advice(row, sentiment_ratio):
 
 # ================= 3. 状态初始化与侧边栏 =================
 if "stocks" not in st.session_state: st.session_state.stocks = load_config()
-if "tech_cache" not in st.session_state: st.session_state.tech_cache = {} # 记忆兜底池
 
 st.sidebar.header("🕹️ 操作控制")
 if st.sidebar.button("🔄 立即刷新实时数据", width="stretch"):
-    # 绝对不能再清空 cache_data 缓存了！只触发 rerun 即可瞬间拉取最新快照
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -171,7 +170,8 @@ for code, name in list(current_stocks.items()):
     col1.text(f"{name} ({code})")
     if col2.button("删除", key=f"del_{code}"):
         del st.session_state.stocks[code]
-        if code in st.session_state.tech_cache: del st.session_state.tech_cache[code]
+        # 删除时顺便清一下该股的日线缓存
+        fetch_single_stock_tech.clear(code) 
         save_config(st.session_state.stocks)
         st.rerun()
 
@@ -201,15 +201,7 @@ refresh_interval = 60 if auto_refresh else None
 
 @st.fragment(run_every=refresh_interval)
 def render_dashboard():
-    # 1. 组装历史技术形态 (带兜底记忆)
-    for code in st.session_state.stocks.keys():
-        tech_result = fetch_single_stock_tech(code)
-        if tech_result is not None:
-            st.session_state.tech_cache[code] = tech_result # 更新最新记忆
-        elif code not in st.session_state.tech_cache:
-            st.session_state.tech_cache[code] = "⏳ 数据采集中" # 只有第一次死活抓不到才显示这个
-
-    # 2. 抓取实时盘口数据
+    # 抓取实时盘口数据
     df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
     
     beijing_tz = timezone(timedelta(hours=8))
@@ -220,8 +212,12 @@ def render_dashboard():
     col2.info(f"🧭 当前大盘情绪: {market_mood} (上涨率: {sentiment_ratio:.1%})")
     
     if success and not df.empty:
-        # 将记忆中的技术形态映射给表格
-        df['日线技术形态'] = df['代码'].map(st.session_state.tech_cache)
+        # 极速组装历史技术形态 (不再使用会导致阻塞的 session_state 兜底循环)
+        tech_dict = {}
+        for code in st.session_state.stocks.keys():
+            tech_dict[code] = fetch_single_stock_tech(code)
+            
+        df['日线技术形态'] = df['代码'].map(tech_dict)
         
         cols = df.columns.tolist()
         cols.insert(4, cols.pop(cols.index('日线技术形态')))
