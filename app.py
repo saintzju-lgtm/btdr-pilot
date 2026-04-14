@@ -6,6 +6,7 @@ import datetime
 from datetime import timezone, timedelta
 import json
 import os
+import random
 
 # ================= 1. 基础配置 =================
 st.set_page_config(page_title="A股专业量化监控看板", page_icon="📈", layout="wide")
@@ -39,66 +40,74 @@ def get_stock_list():
         return []
 
 # ================= 2. 专业数据与技术形态计算 =================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False) # 缓存10分钟，日线指标不需频繁计算
 def fetch_technical_analysis(stock_codes):
-    """抓取历史K线并计算 MA20 和 MACD（加入防限流机制）"""
+    """抓取历史K线并计算 MA20 和 MACD（加入强力防限流与重试机制）"""
     tech_forms = {}
-    # 只取最近100天的历史数据，极大减轻接口压力和传输时间
+    # 核心优化：只取最近100天的历史数据，极大减轻接口压力和传输时间
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
     
     for code in stock_codes:
-        try:
-            # 加入 0.2 秒的微小延迟，防止并发请求被拦截
-            time.sleep(0.2) 
-            
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
-            if df is None or df.empty or len(df) < 30:
-                tech_forms[code] = "数据不足/停牌"
+        success = False
+        # 智能重试机制：每个股票最多重试 3 次，对抗网络抖动
+        for attempt in range(3): 
+            try:
+                # 模拟真人休眠：0.5 到 1.5 秒的随机延迟，防止被判为爬虫封禁 IP
+                time.sleep(random.uniform(0.5, 1.5)) 
+                
+                df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
+                
+                if df is not None and not df.empty and len(df) >= 30:
+                    df['MA20'] = df['收盘'].rolling(window=20).mean()
+                    
+                    exp1 = df['收盘'].ewm(span=12, adjust=False).mean()
+                    exp2 = df['收盘'].ewm(span=26, adjust=False).mean()
+                    df['DIF'] = exp1 - exp2
+                    df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
+                    df['MACD'] = 2 * (df['DIF'] - df['DEA'])
+                    
+                    latest = df.iloc[-1]
+                    prev = df.iloc[-2]
+                    
+                    form_labels = []
+                    
+                    # 1. MA20 判定
+                    if latest['收盘'] > latest['MA20'] and prev['收盘'] <= prev['MA20']:
+                        form_labels.append("🔥 强势突破 MA20")
+                    elif latest['收盘'] < latest['MA20'] and prev['收盘'] >= prev['MA20']:
+                        form_labels.append("⚠️ 跌破 MA20 支撑")
+                    elif latest['收盘'] > latest['MA20']:
+                        form_labels.append("🟢 站稳 MA20 之上")
+                    else:
+                        form_labels.append("🔴 受压于 MA20 之下")
+                        
+                    # 2. MACD 判定
+                    dif, dea = latest['DIF'], latest['DEA']
+                    prev_dif, prev_dea = prev['DIF'], prev['DEA']
+                    
+                    loc = "零上" if dif > 0 else "零下"
+                    if dif > dea and prev_dif <= prev_dea:
+                        form_labels.append(f"📈 MACD {loc}金叉")
+                    elif dif < dea and prev_dif >= prev_dea:
+                        form_labels.append(f"📉 MACD {loc}死叉")
+                    elif dif > dea:
+                        form_labels.append("☀️ MACD 多头排列")
+                    else:
+                        form_labels.append("🌧️ MACD 空头排列")
+                        
+                    tech_forms[code] = " | ".join(form_labels)
+                    success = True
+                    break # 成功则跳出重试循环
+                    
+            except Exception as e:
+                time.sleep(2) # 失败则等待 2 秒后进行下一次重试
                 continue
                 
-            # 计算 MA20
-            df['MA20'] = df['收盘'].rolling(window=20).mean()
-            
-            # 计算 MACD
-            exp1 = df['收盘'].ewm(span=12, adjust=False).mean()
-            exp2 = df['收盘'].ewm(span=26, adjust=False).mean()
-            df['DIF'] = exp1 - exp2
-            df['DEA'] = df['DIF'].ewm(span=9, adjust=False).mean()
-            df['MACD'] = 2 * (df['DIF'] - df['DEA'])
-            
-            # 取最近两天的指标来判断突破和交叉
-            latest = df.iloc[-1]
-            prev = df.iloc[-2]
-            
-            form_labels = []
-            
-            # 1. MA20 判定
-            if latest['收盘'] > latest['MA20'] and prev['收盘'] <= prev['MA20']:
-                form_labels.append("🔥 强势突破 MA20")
-            elif latest['收盘'] < latest['MA20'] and prev['收盘'] >= prev['MA20']:
-                form_labels.append("⚠️ 跌破 MA20 支撑")
-            elif latest['收盘'] > latest['MA20']:
-                form_labels.append("🟢 站稳 MA20 之上")
-            else:
-                form_labels.append("🔴 受压于 MA20 之下")
-                
-            # 2. MACD 判定
-            dif, dea = latest['DIF'], latest['DEA']
-            prev_dif, prev_dea = prev['DIF'], prev['DEA']
-            
-            loc = "零上" if dif > 0 else "零下"
-            if dif > dea and prev_dif <= prev_dea:
-                form_labels.append(f"📈 MACD {loc}金叉")
-            elif dif < dea and prev_dif >= prev_dea:
-                form_labels.append(f"📉 MACD {loc}死叉")
-            elif dif > dea:
-                form_labels.append("☀️ MACD 多头排列")
-            else:
-                form_labels.append("🌧️ MACD 空头排列")
-                
-            tech_forms[code] = " | ".join(form_labels)
-        except Exception as e:
-            tech_forms[code] = "接口限流/失败"
+        # 若 3 次全失败
+        if not success:
+            # 清除本函数的专属缓存，使得下次刷新时能够重新拉取，避免一直死记"失败"状态
+            fetch_technical_analysis.clear() 
+            tech_forms[code] = "⏳ 数据源拥堵稍后重试"
             
     return tech_forms
 
@@ -165,9 +174,9 @@ if "stocks" not in st.session_state:
     st.session_state.stocks = load_config()
 
 st.sidebar.header("🕹️ 操作控制")
-# 替换点 1：将 use_container_width=True 改为 width="stretch"
+
 if st.sidebar.button("🔄 立即刷新数据", width="stretch"):
-    st.cache_data.clear() # 手动点击时清除一下缓存，强制拉取最新
+    st.cache_data.clear() # 手动点击时清除所有缓存，强制拉取最新数据
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -241,7 +250,7 @@ def render_dashboard():
         df_display['量比'] = df_display['量比'].apply(lambda x: f"{x:.2f}")
         df_display['实时价格'] = df_display['实时价格'].apply(lambda x: f"¥ {x:.2f}")
 
-        # 替换点 2：将 use_container_width=True 改为 width="stretch"
+        # 使用 width="stretch" 自适应宽度
         st.dataframe(
             df_display, 
             width="stretch", 
