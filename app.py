@@ -7,10 +7,9 @@ import json
 import os
 
 # ================= 1. 基础配置 =================
-st.set_page_config(page_title="A股实时监控看板", page_icon="📈", layout="wide")
+st.set_page_config(page_title="A股专业量化监控看板", page_icon="📈", layout="wide")
 CONFIG_FILE = "stocks_config.json"
 
-# 默认截图中的核心股票
 DEFAULT_STOCKS = {
     "601899": "紫金矿业",
     "002156": "通富微电",
@@ -19,22 +18,18 @@ DEFAULT_STOCKS = {
     "601138": "工业富联"
 }
 
-# ================= 2. 核心功能函数 =================
 def load_config():
-    """从本地读取配置"""
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return DEFAULT_STOCKS
 
 def save_config(stocks_dict):
-    """保存配置到本地"""
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(stocks_dict, f, ensure_ascii=False, indent=4)
 
-@st.cache_data(ttl=86400) # 缓存24小时！极大地提升刷新速度
+@st.cache_data(ttl=86400)
 def get_stock_list():
-    """获取A股全市场股票列表用于模糊搜索"""
     try:
         df = ak.stock_info_a_code_name()
         df['display'] = df['code'] + " - " + df['name']
@@ -42,42 +37,101 @@ def get_stock_list():
     except Exception:
         return []
 
-@st.cache_data(ttl=10) # 行情数据缓存10秒，防止快速点击时卡顿或被封IP
-def fetch_realtime_data(stock_map):
-    """抓取选定股票的实时行情"""
+# ================= 2. 专业数据与策略逻辑 =================
+@st.cache_data(ttl=10)
+def fetch_realtime_data_pro(stock_map):
+    """抓取全量深度数据，并计算大盘情绪"""
     try:
         df_all = ak.stock_zh_a_spot_em()
-        # 过滤并重命名列
+        
+        # 1. 计算大盘情绪（上涨家数 vs 下跌家数）
+        up_count = len(df_all[df_all['涨跌幅'] > 0])
+        down_count = len(df_all[df_all['涨跌幅'] < 0])
+        total_valid = up_count + down_count
+        sentiment_ratio = up_count / total_valid if total_valid > 0 else 0.5
+        
+        # 情绪打分标签
+        if sentiment_ratio > 0.7: market_mood = "🔥 情绪高潮 (普涨)"
+        elif sentiment_ratio > 0.5: market_mood = "☀️ 情绪偏暖 (多头占优)"
+        elif sentiment_ratio > 0.3: market_mood = "☁️ 情绪分化 (震荡分化)"
+        else: market_mood = "❄️ 情绪冰点 (普跌退潮)"
+
+        # 2. 过滤目标股票并提取专业指标
         df_target = df_all[df_all['代码'].isin(stock_map.keys())].copy()
         df_target['名称'] = df_target['代码'].map(stock_map)
-        df_target = df_target[['名称', '代码', '最新价', '涨跌幅']]
-        df_target.columns = ['股票名称', '代码', '实时价格', '当日涨跌幅(%)']
-        return df_target.reset_index(drop=True), True
+        
+        # 保留更多量价特征列
+        df_target = df_target[['名称', '代码', '最新价', '涨跌幅', '量比', '换手率', '振幅']]
+        df_target.columns = ['股票名称', '代码', '实时价格', '涨跌幅(%)', '量比', '换手率(%)', '振幅(%)']
+        
+        return df_target.reset_index(drop=True), market_mood, sentiment_ratio, True
     except Exception:
-        return pd.DataFrame(), False
+        return pd.DataFrame(), "⚠️ 获取失败", 0.5, False
 
-def generate_advice(pct_change):
-    """生成操作建议"""
-    if pct_change >= 3.0: return "⚠️ 涨幅较大，建议逢高分批止盈"
-    elif 1.0 <= pct_change < 3.0: return "📈 走势良好，建议继续持有"
-    elif -1.0 <= pct_change < 1.0: return "⏸️ 震荡整理，暂不操作观望"
-    elif -3.0 < pct_change <= -1.0: return "📉 出现回调，注意下方支撑"
-    else: return "💡 跌幅较大，观察企稳位置寻找低吸机会"
+def generate_pro_advice(row, sentiment_ratio):
+    """基于多因子（量价+情绪+振幅）生成专业操作建议"""
+    pct = row['涨跌幅(%)']
+    vol_ratio = row['量比']
+    turnover = row['换手率(%)']
+    amplitude = row['振幅(%)']
+    
+    advice = []
+    
+    # 1. 大盘情绪环境判定
+    if sentiment_ratio < 0.3 and pct > 0:
+        advice.append("逆势抗跌，")
+    elif sentiment_ratio > 0.7 and pct < 0:
+        advice.append("逆势走弱，")
+        
+    # 2. 量价形态核心判定
+    if pct >= 3.0:
+        if vol_ratio > 1.5:
+            advice.append("放量大涨，资金介入明显。")
+            if turnover > 10: advice.append("但高换手提示筹码分歧加大，切勿无脑追高，持筹者可沿均线定止盈。")
+            else: advice.append("筹码锁定良好，建议顺势持有。")
+        elif vol_ratio < 0.8:
+            advice.append("缩量上涨，抛压较小但追买意愿不足，注意提防冲高回落风险。")
+        else:
+            advice.append("量价配合健康，趋势良好，继续持股。")
+            
+    elif 0 < pct < 3.0:
+        if amplitude > 5:
+            advice.append("宽幅震荡收红，日内洗盘/分歧加剧，建议观察企稳情况。")
+        elif vol_ratio > 1.5:
+            advice.append("放量滞涨，警惕上方抛压，可能面临变盘。")
+        else:
+            advice.append("温和震荡向上，按原有节奏持仓观望。")
+            
+    elif -2.0 <= pct <= 0:
+        if vol_ratio < 0.8:
+            advice.append("缩量整理，属于良性调整，重点关注下方核心均线支撑。")
+        elif vol_ratio > 1.5:
+            advice.append("放量微跌，资金博弈激烈，短线有向下破位隐患，注意风控。")
+        else:
+            advice.append("弱势震荡，暂无明显方向，多看少动。")
+            
+    else: # pct < -2.0
+        if vol_ratio > 1.5:
+            advice.append("放量杀跌，机构/大户出逃明显，**严禁轻易抄底**，坚决执行止损纪律。")
+        else:
+            if amplitude > 6:
+                advice.append("缩量宽幅下跌，情绪性杀跌为主，可能存在错杀，等待右侧止跌企稳信号。")
+            else:
+                advice.append("阴跌走势，趋势破位风险大，建议逢反弹减仓。")
 
-# ================= 3. 状态初始化 =================
+    return "".join(advice)
+
+# ================= 3. 状态初始化与侧边栏 =================
 if "stocks" not in st.session_state:
     st.session_state.stocks = load_config()
 
-# ================= 4. 侧边栏 UI =================
 st.sidebar.header("🕹️ 操作控制")
-
 if st.sidebar.button("🔄 立即刷新数据", use_container_width=True):
     st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("🛠️ 股票池配置")
 
-# 4.1 管理当前股票
 current_stocks = st.session_state.stocks.copy()
 for code, name in list(current_stocks.items()):
     col1, col2 = st.sidebar.columns([3, 1])
@@ -88,8 +142,6 @@ for code, name in list(current_stocks.items()):
         st.rerun()
 
 st.sidebar.markdown("---")
-
-# 4.2 下拉框模糊搜索添加股票
 st.sidebar.subheader("添加新股票")
 all_stocks_list = get_stock_list()
 
@@ -103,9 +155,7 @@ if all_stocks_list:
 
     if st.sidebar.button("确认添加"):
         if selected_stock:
-            # 拆分出代码和名称
             new_code, new_name = selected_stock.split(" - ", 1)
-            
             if new_code in st.session_state.stocks:
                 st.sidebar.warning(f"{new_name} 已在列表中！")
             else:
@@ -114,39 +164,43 @@ if all_stocks_list:
                 st.rerun()
         else:
             st.sidebar.error("请先从下拉菜单中选择股票")
-else:
-    st.sidebar.error("基础股票列表加载中或网络异常...")
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("开启 1分钟 自动刷新", value=True)
 
-# ================= 5. 主界面渲染 =================
-st.title("📊 A股核心市场数据切片")
+# ================= 4. 主界面渲染 =================
+st.title("📊 A股专业日内量化监控看板")
 
-# 顶部时间与状态
-current_time = datetime.datetime.now().strftime("%Y.%m.%d %H:%M:%S")
-st.info(f"实时快照 (Real-time Snapshot): {current_time} | 每 60 秒自动更新")
-
-# 数据抓取与展示
 placeholder = st.empty()
 with placeholder.container():
-    df, success = fetch_realtime_data(st.session_state.stocks)
+    df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
+    
+    current_time = datetime.datetime.now().strftime("%Y.%m.%d %H:%M:%S")
+    
+    # 顶部状态栏：展示时间和实时大盘情绪
+    col1, col2 = st.columns([1, 1])
+    col1.info(f"🕒 快照时间: {current_time} (60秒更新)")
+    col2.info(f"🧭 当前大盘情绪: {market_mood} (上涨率: {sentiment_ratio:.1%})")
     
     if success and not df.empty:
-        df['后续持仓建议'] = df['当日涨跌幅(%)'].apply(generate_advice)
+        # 生成专业分析建议
+        df['量化交易内参'] = df.apply(lambda row: generate_pro_advice(row, sentiment_ratio), axis=1)
         
-        # 格式化美化 (处理正负号和保留两位小数)
+        # 格式化美化
         df_display = df.copy()
-        df_display['当日涨跌幅(%)'] = df_display['当日涨跌幅(%)'].apply(lambda x: f"{x:+.2f}%")
+        df_display['涨跌幅(%)'] = df_display['涨跌幅(%)'].apply(lambda x: f"{x:+.2f}%")
+        df_display['换手率(%)'] = df_display['换手率(%)'].apply(lambda x: f"{x:.2f}%")
+        df_display['振幅(%)'] = df_display['振幅(%)'].apply(lambda x: f"{x:.2f}%")
+        df_display['量比'] = df_display['量比'].apply(lambda x: f"{x:.2f}")
         df_display['实时价格'] = df_display['实时价格'].apply(lambda x: f"¥ {x:.2f}")
 
-        # 使用 column_config 美化列宽
+        # 使用高亮逻辑：给量比等核心指标加颜色提醒
         st.dataframe(
             df_display, 
             use_container_width=True, 
             hide_index=True,
             column_config={
-                "后续持仓建议": st.column_config.TextColumn(width="large")
+                "量化交易内参": st.column_config.TextColumn(width="large"),
             }
         )
     elif df.empty and success:
@@ -154,8 +208,7 @@ with placeholder.container():
     else:
         st.error("数据抓取异常，请点击左上角手动刷新或检查网络。")
 
-# ================= 6. 自动刷新逻辑 =================
-# 放在页面最后，确保先渲染完 UI 再进行阻塞挂起
+# ================= 5. 自动刷新逻辑 =================
 if auto_refresh:
     time.sleep(60)
     st.rerun()
