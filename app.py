@@ -11,15 +11,13 @@ import random
 # ================= 1. 基础配置与终极 CSS 魔法 =================
 st.set_page_config(page_title="A股专业量化监控看板", page_icon="📈", layout="wide")
 CONFIG_FILE = "stocks_config.json"
+STOCK_DICT_FILE = "stock_dict_backup.json" # 新增：本地字典永久备份文件
 
 st.markdown(
     """
     <style>
-        /* 隐藏右上角加载状态和顶部进度条 */
         [data-testid="stStatusWidget"] { display: none !important; }
         .stApp > header { display: none !important; }
-        
-        /* 彻底干掉刷新时的页面变灰和不可点击状态，确保无感更新 */
         div[data-stale="true"], div[data-stale="true"] * {
             opacity: 1 !important;
             transition: none !important;
@@ -49,19 +47,40 @@ def save_config(stocks_dict):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(stocks_dict, f, ensure_ascii=False, indent=4)
 
+# === 核心修复区：带有重试和本地永久备份的基础词典 ===
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_stock_list():
-    try:
-        df = ak.stock_info_a_code_name()
-        df['display'] = df['code'] + " - " + df['name']
-        return df['display'].tolist()
-    except Exception:
-        return []
+    # 1. 尝试从网络抓取，最多重试 3 次
+    for attempt in range(3):
+        try:
+            time.sleep(random.uniform(0.3, 1.0))
+            df = ak.stock_info_a_code_name()
+            if df is not None and not df.empty:
+                df['display'] = df['code'] + " - " + df['name']
+                stock_list = df['display'].tolist()
+                
+                # 抓取成功后，立刻在本地保存一份永久备份！
+                with open(STOCK_DICT_FILE, "w", encoding="utf-8") as f:
+                    json.dump(stock_list, f, ensure_ascii=False)
+                    
+                return stock_list
+        except Exception:
+            time.sleep(1)
+            continue
+            
+    # 2. 如果网络 3 次都失败了，直接读取本地的永久备份（不再返回空列表）
+    if os.path.exists(STOCK_DICT_FILE):
+        try:
+            with open(STOCK_DICT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+            
+    return [] # 只有在项目第一次运行且死活连不上网时才会到这里
 
 # ================= 2. 专业数据与技术形态计算 =================
 @st.cache_data(ttl=43200, show_spinner=False) 
 def fetch_single_stock_tech(code):
-    """单股独立缓存，Fail-Fast 机制防止阻塞"""
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
@@ -144,7 +163,6 @@ if "last_refresh_timestamp" not in st.session_state: st.session_state.last_refre
 
 st.sidebar.header("🕹️ 操作控制")
 
-# 防刷冷却盾 (10秒冷却)
 COOLDOWN_SECONDS = 10 
 if st.sidebar.button("🔄 立即刷新实时数据", width="stretch"):
     current_ts = time.time()
@@ -172,8 +190,9 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("添加新股票")
 all_stocks_list = get_stock_list()
 
+# 移除极简模式，只要有数据（不管是网络的还是本地兜底的），永远显示高级搜索框！
 if all_stocks_list:
-    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325")
+    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325 或 宏和")
     if st.sidebar.button("确认添加"):
         if selected_stock:
             new_code, new_name = selected_stock.split(" - ", 1)
@@ -184,15 +203,9 @@ if all_stocks_list:
             else:
                 st.sidebar.warning(f"{new_name} 已在列表中！")
 else:
+    # 极端罕见情况：第一次运行，且死活连不上网，没有本地备份
     get_stock_list.clear() 
-    st.sidebar.warning("⚠️ 基础词典加载拥堵，已切换至极简模式")
-    manual_code = st.sidebar.text_input("输入6位股票代码", max_chars=6)
-    if st.sidebar.button("强制添加"):
-        if manual_code and len(manual_code) == 6:
-            if manual_code not in st.session_state.stocks:
-                st.session_state.stocks[manual_code] = "待获取..." 
-                save_config(st.session_state.stocks)
-                st.rerun()
+    st.sidebar.error("❌ 严重网络拥堵，无法加载基础词典，请稍后再试。")
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("开启 5分钟自动无感刷新", value=True)
@@ -200,7 +213,6 @@ auto_refresh = st.sidebar.checkbox("开启 5分钟自动无感刷新", value=Tru
 # ================= 4. 主界面渲染 =================
 st.title("📊 A股专业量化监控看板 (盘口+日线共振)")
 
-# 设置自动刷新间隔为 300 秒 (5分钟)
 refresh_interval = 300 if auto_refresh else None
 
 @st.fragment(run_every=refresh_interval)
@@ -214,7 +226,6 @@ def render_dashboard():
     
     df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
     
-    # === 核心兜底逻辑 ===
     if success and not df.empty:
         st.session_state.last_realtime_df = df.copy()
         st.session_state.last_market_mood = market_mood
