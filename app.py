@@ -6,6 +6,7 @@ import datetime
 from datetime import timezone, timedelta
 import json
 import os
+import random
 
 # ================= 1. 基础配置与终极 CSS 魔法 =================
 st.set_page_config(page_title="A股专业量化监控看板", page_icon="📈", layout="wide")
@@ -14,8 +15,10 @@ CONFIG_FILE = "stocks_config.json"
 st.markdown(
     """
     <style>
+        /* 隐藏右上角加载状态和顶部进度条 */
         [data-testid="stStatusWidget"] { display: none !important; }
         .stApp > header { display: none !important; }
+        /* 彻底干掉刷新时的页面变灰和不可点击状态 */
         div[data-stale="true"], div[data-stale="true"] * {
             opacity: 1 !important;
             transition: none !important;
@@ -47,6 +50,7 @@ def save_config(stocks_dict):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_stock_list():
+    """获取全市场股票列表用于侧边栏模糊搜索"""
     try:
         df = ak.stock_info_a_code_name()
         df['display'] = df['code'] + " - " + df['name']
@@ -55,10 +59,11 @@ def get_stock_list():
         return []
 
 # ================= 2. 专业数据与技术形态计算 =================
-@st.cache_data(ttl=43200, show_spinner=False) 
+@st.cache_data(ttl=43200, show_spinner=False) # 日线数据缓存 12 小时
 def fetch_single_stock_tech(code):
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
     try:
+        # 快速试探，绝不阻塞休眠
         df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
         if df is not None and not df.empty and len(df) >= 30:
             df['MA20'] = df['收盘'].rolling(window=20).mean()
@@ -91,6 +96,7 @@ def fetch_single_stock_tech(code):
 
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_realtime_data_pro(stock_map):
+    """只抓取快照数据，速度极快"""
     try:
         df_all = ak.stock_zh_a_spot_em()
         up_count = len(df_all[df_all['涨跌幅'] > 0])
@@ -103,6 +109,15 @@ def fetch_realtime_data_pro(stock_map):
         else: market_mood = "❄️ 情绪冰点 (普跌退潮)"
 
         df_target = df_all[df_all['代码'].isin(stock_map.keys())].copy()
+        
+        # 将原始数据中的真实名称更新过来，覆盖掉“待获取...”
+        for code in stock_map.keys():
+            real_name_series = df_target.loc[df_target['代码'] == code, '名称']
+            if not real_name_series.empty and stock_map[code] == "待获取...":
+                real_name = real_name_series.values[0]
+                stock_map[code] = real_name
+                save_config(stock_map)
+                
         df_target['名称'] = df_target['代码'].map(stock_map)
         df_target = df_target[['名称', '代码', '最新价', '涨跌幅', '量比', '换手率', '振幅']]
         df_target.columns = ['股票名称', '代码', '实时价格', '涨跌幅(%)', '量比', '换手率(%)', '振幅(%)']
@@ -134,7 +149,6 @@ def generate_pro_advice(row, sentiment_ratio):
 
 # ================= 3. 状态初始化与侧边栏 =================
 if "stocks" not in st.session_state: st.session_state.stocks = load_config()
-# 新增：盘口数据的记忆兜底池
 if "last_realtime_df" not in st.session_state: st.session_state.last_realtime_df = pd.DataFrame()
 if "last_market_mood" not in st.session_state: st.session_state.last_market_mood = "未知"
 if "last_sentiment_ratio" not in st.session_state: st.session_state.last_sentiment_ratio = 0.5
@@ -161,7 +175,7 @@ st.sidebar.subheader("添加新股票")
 all_stocks_list = get_stock_list()
 
 if all_stocks_list:
-    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325")
+    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325 或 宏和")
     if st.sidebar.button("确认添加"):
         if selected_stock:
             new_code, new_name = selected_stock.split(" - ", 1)
@@ -171,6 +185,21 @@ if all_stocks_list:
                 st.rerun()
             else:
                 st.sidebar.warning(f"{new_name} 已在列表中！")
+else:
+    # 词典加载失败时的极简降级模式
+    get_stock_list.clear() # 炸掉“空列表”的毒缓存
+    st.sidebar.warning("⚠️ 基础词典加载拥堵，已切换至极简模式")
+    manual_code = st.sidebar.text_input("输入6位股票代码", max_chars=6, placeholder="如: 600325")
+    if st.sidebar.button("强制添加"):
+        if manual_code and len(manual_code) == 6:
+            if manual_code not in st.session_state.stocks:
+                st.session_state.stocks[manual_code] = "待获取..." 
+                save_config(st.session_state.stocks)
+                st.rerun()
+            else:
+                st.sidebar.warning(f"{manual_code} 已存在！")
+        else:
+            st.sidebar.error("请输入正确的6位代码")
 
 st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("开启 1分钟自动无感刷新", value=True)
@@ -182,12 +211,11 @@ refresh_interval = 60 if auto_refresh else None
 
 @st.fragment(run_every=refresh_interval)
 def render_dashboard():
-    # 获取精确时间并判断是否收盘
+    # 判断是否在盘后结算时间 (大于15:00 或 小于9:30)
     beijing_tz = timezone(timedelta(hours=8))
     now = datetime.datetime.now(beijing_tz)
     current_time = now.strftime("%Y.%m.%d %H:%M:%S")
     
-    # 判断是否在盘后结算时间 (大于15:00 或 小于9:30)
     is_closed = now.hour >= 15 or now.hour < 9 or (now.hour == 9 and now.minute < 30)
     time_status = "已收盘/盘后结算" if is_closed else "无感静默更新"
     
@@ -196,19 +224,16 @@ def render_dashboard():
     
     # === 核心兜底逻辑 ===
     if success and not df.empty:
-        # 如果抓取成功，将数据存入记忆池
         st.session_state.last_realtime_df = df.copy()
         st.session_state.last_market_mood = market_mood
         st.session_state.last_sentiment_ratio = sentiment_ratio
     else:
-        # 如果抓取失败（无论是盘后清算还是接口限流），启用最后一次成功的记忆
         if not st.session_state.last_realtime_df.empty:
             df = st.session_state.last_realtime_df
             market_mood = st.session_state.last_market_mood
             sentiment_ratio = st.session_state.last_sentiment_ratio
             success = True
             if not is_closed:
-                # 只有在盘中异常限流时才用右下角小弹窗提示，不影响整体页面美观
                 st.toast("⚠️ 接口暂时拥堵，当前展示最后一次成功获取的快照数据", icon="⏳")
 
     # 渲染顶部信息栏
@@ -217,6 +242,7 @@ def render_dashboard():
     col2.info(f"🧭 当前大盘情绪: {market_mood} (上涨率: {sentiment_ratio:.1%})")
     
     if success and not df.empty:
+        # 获取最新的技术形态并聚合
         tech_dict = {}
         for code in st.session_state.stocks.keys():
             tech_dict[code] = fetch_single_stock_tech(code)
@@ -248,4 +274,5 @@ def render_dashboard():
     else:
         st.error("数据结算中或网络断开，请稍后重试...")
 
+# 调用执行局部刷新容器
 render_dashboard()
