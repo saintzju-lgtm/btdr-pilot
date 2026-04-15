@@ -18,7 +18,8 @@ st.markdown(
         /* 隐藏右上角加载状态和顶部进度条 */
         [data-testid="stStatusWidget"] { display: none !important; }
         .stApp > header { display: none !important; }
-        /* 彻底干掉刷新时的页面变灰和不可点击状态 */
+        
+        /* 彻底干掉刷新时的页面变灰和不可点击状态，确保无感更新 */
         div[data-stale="true"], div[data-stale="true"] * {
             opacity: 1 !important;
             transition: none !important;
@@ -50,7 +51,6 @@ def save_config(stocks_dict):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_stock_list():
-    """获取全市场股票列表用于侧边栏模糊搜索"""
     try:
         df = ak.stock_info_a_code_name()
         df['display'] = df['code'] + " - " + df['name']
@@ -59,11 +59,11 @@ def get_stock_list():
         return []
 
 # ================= 2. 专业数据与技术形态计算 =================
-@st.cache_data(ttl=43200, show_spinner=False) # 日线数据缓存 12 小时
+@st.cache_data(ttl=43200, show_spinner=False) 
 def fetch_single_stock_tech(code):
+    """单股独立缓存，Fail-Fast 机制防止阻塞"""
     start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime("%Y%m%d")
     try:
-        # 快速试探，绝不阻塞休眠
         df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, adjust="qfq")
         if df is not None and not df.empty and len(df) >= 30:
             df['MA20'] = df['收盘'].rolling(window=20).mean()
@@ -89,14 +89,12 @@ def fetch_single_stock_tech(code):
             else: form_labels.append("🌧️ 空头排列")
                 
             return " | ".join(form_labels)
-        else:
-            return "⚠️ 接口无数据"
+        return "⚠️ 接口无数据"
     except Exception:
         return "⚠️ 日线接口限流"
 
 @st.cache_data(ttl=10, show_spinner=False)
 def fetch_realtime_data_pro(stock_map):
-    """只抓取快照数据，速度极快"""
     try:
         df_all = ak.stock_zh_a_spot_em()
         up_count = len(df_all[df_all['涨跌幅'] > 0])
@@ -109,19 +107,15 @@ def fetch_realtime_data_pro(stock_map):
         else: market_mood = "❄️ 情绪冰点 (普跌退潮)"
 
         df_target = df_all[df_all['代码'].isin(stock_map.keys())].copy()
-        
-        # 将原始数据中的真实名称更新过来，覆盖掉“待获取...”
         for code in stock_map.keys():
             real_name_series = df_target.loc[df_target['代码'] == code, '名称']
             if not real_name_series.empty and stock_map[code] == "待获取...":
-                real_name = real_name_series.values[0]
-                stock_map[code] = real_name
+                stock_map[code] = real_name_series.values[0]
                 save_config(stock_map)
                 
         df_target['名称'] = df_target['代码'].map(stock_map)
         df_target = df_target[['名称', '代码', '最新价', '涨跌幅', '量比', '换手率', '振幅']]
         df_target.columns = ['股票名称', '代码', '实时价格', '涨跌幅(%)', '量比', '换手率(%)', '振幅(%)']
-        
         return df_target.reset_index(drop=True), market_mood, sentiment_ratio, True
     except Exception:
         return pd.DataFrame(), "⚠️ 获取失败", 0.5, False
@@ -131,20 +125,14 @@ def generate_pro_advice(row, sentiment_ratio):
     advice = []
     if "突破 MA20" in tech_form: advice.append("日线级别突破，")
     elif "跌破 MA20" in tech_form: advice.append("中线生命线失守，")
-        
     if pct >= 3.0:
-        if vol_ratio > 1.5: advice.append("放量大涨，若筹码分歧可逢高定止盈。")
-        else: advice.append("缩量上涨，追高意愿不足，防冲高回落。")
+        advice.append("放量大涨，逢高定止盈。" if vol_ratio > 1.5 else "缩量上涨，追高需谨慎。")
     elif 0 < pct < 3.0:
-        if vol_ratio > 1.5: advice.append("放量滞涨，警惕抛压。")
-        else: advice.append("温和震荡，按原有节奏持仓。")
+        advice.append("放量滞涨，警惕抛压。" if vol_ratio > 1.5 else "温和震荡，按节奏持仓。")
     elif -2.0 <= pct <= 0:
-        if vol_ratio < 0.8: advice.append("缩量整理，良性调整。")
-        elif vol_ratio > 1.5: advice.append("放量微跌，短线有破位隐患。")
-        else: advice.append("弱势震荡，多看少动。")
+        advice.append("缩量整理，良性调整。" if vol_ratio < 0.8 else "弱势震荡，多看少动。")
     else: 
-        if vol_ratio > 1.5: advice.append("放量杀跌，严禁抄底。")
-        else: advice.append("情绪杀跌，等待右侧企稳信号。")
+        advice.append("放量杀跌，严禁抄底。" if vol_ratio > 1.5 else "情绪杀跌，待右侧信号。")
     return "".join(advice)
 
 # ================= 3. 状态初始化与侧边栏 =================
@@ -152,10 +140,20 @@ if "stocks" not in st.session_state: st.session_state.stocks = load_config()
 if "last_realtime_df" not in st.session_state: st.session_state.last_realtime_df = pd.DataFrame()
 if "last_market_mood" not in st.session_state: st.session_state.last_market_mood = "未知"
 if "last_sentiment_ratio" not in st.session_state: st.session_state.last_sentiment_ratio = 0.5
+if "last_refresh_timestamp" not in st.session_state: st.session_state.last_refresh_timestamp = 0
 
 st.sidebar.header("🕹️ 操作控制")
+
+# 防刷冷却盾 (10秒冷却)
+COOLDOWN_SECONDS = 10 
 if st.sidebar.button("🔄 立即刷新实时数据", width="stretch"):
-    st.rerun()
+    current_ts = time.time()
+    time_passed = current_ts - st.session_state.last_refresh_timestamp
+    if time_passed < COOLDOWN_SECONDS:
+        st.toast(f"🛡️ 技能冷却中！请等待 {int(COOLDOWN_SECONDS - time_passed)} 秒...", icon="⏳")
+    else:
+        st.session_state.last_refresh_timestamp = current_ts
+        st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("🛠️ 股票池配置")
@@ -175,7 +173,7 @@ st.sidebar.subheader("添加新股票")
 all_stocks_list = get_stock_list()
 
 if all_stocks_list:
-    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325 或 宏和")
+    selected_stock = st.sidebar.selectbox("搜索股票", options=all_stocks_list, index=None, placeholder="例如: 600325")
     if st.sidebar.button("确认添加"):
         if selected_stock:
             new_code, new_name = selected_stock.split(" - ", 1)
@@ -186,40 +184,34 @@ if all_stocks_list:
             else:
                 st.sidebar.warning(f"{new_name} 已在列表中！")
 else:
-    # 词典加载失败时的极简降级模式
-    get_stock_list.clear() # 炸掉“空列表”的毒缓存
+    get_stock_list.clear() 
     st.sidebar.warning("⚠️ 基础词典加载拥堵，已切换至极简模式")
-    manual_code = st.sidebar.text_input("输入6位股票代码", max_chars=6, placeholder="如: 600325")
+    manual_code = st.sidebar.text_input("输入6位股票代码", max_chars=6)
     if st.sidebar.button("强制添加"):
         if manual_code and len(manual_code) == 6:
             if manual_code not in st.session_state.stocks:
                 st.session_state.stocks[manual_code] = "待获取..." 
                 save_config(st.session_state.stocks)
                 st.rerun()
-            else:
-                st.sidebar.warning(f"{manual_code} 已存在！")
-        else:
-            st.sidebar.error("请输入正确的6位代码")
 
 st.sidebar.markdown("---")
-auto_refresh = st.sidebar.checkbox("开启 1分钟自动无感刷新", value=True)
+auto_refresh = st.sidebar.checkbox("开启 5分钟自动无感刷新", value=True)
 
 # ================= 4. 主界面渲染 =================
 st.title("📊 A股专业量化监控看板 (盘口+日线共振)")
 
-refresh_interval = 60 if auto_refresh else None
+# 设置自动刷新间隔为 300 秒 (5分钟)
+refresh_interval = 300 if auto_refresh else None
 
 @st.fragment(run_every=refresh_interval)
 def render_dashboard():
-    # 判断是否在盘后结算时间 (大于15:00 或 小于9:30)
     beijing_tz = timezone(timedelta(hours=8))
     now = datetime.datetime.now(beijing_tz)
     current_time = now.strftime("%Y.%m.%d %H:%M:%S")
     
     is_closed = now.hour >= 15 or now.hour < 9 or (now.hour == 9 and now.minute < 30)
-    time_status = "已收盘/盘后结算" if is_closed else "无感静默更新"
+    time_status = "已收盘/盘后结算" if is_closed else "5分钟静默更新"
     
-    # 尝试抓取实时盘口数据
     df, market_mood, sentiment_ratio, success = fetch_realtime_data_pro(st.session_state.stocks)
     
     # === 核心兜底逻辑 ===
@@ -234,19 +226,14 @@ def render_dashboard():
             sentiment_ratio = st.session_state.last_sentiment_ratio
             success = True
             if not is_closed:
-                st.toast("⚠️ 接口暂时拥堵，当前展示最后一次成功获取的快照数据", icon="⏳")
+                st.toast("⚠️ 接口暂时拥堵，当前展示最后一次成功的快照", icon="⏳")
 
-    # 渲染顶部信息栏
     col1, col2 = st.columns([1, 1])
     col1.info(f"🕒 快照时间 (北京时间): {current_time} ({time_status})")
     col2.info(f"🧭 当前大盘情绪: {market_mood} (上涨率: {sentiment_ratio:.1%})")
     
     if success and not df.empty:
-        # 获取最新的技术形态并聚合
-        tech_dict = {}
-        for code in st.session_state.stocks.keys():
-            tech_dict[code] = fetch_single_stock_tech(code)
-            
+        tech_dict = {code: fetch_single_stock_tech(code) for code in st.session_state.stocks.keys()}
         df['日线技术形态'] = df['代码'].map(tech_dict)
         
         cols = df.columns.tolist()
@@ -270,9 +257,8 @@ def render_dashboard():
             }
         )
     elif df.empty and success:
-        st.warning("监控列表为空，请在左侧添加股票。")
+        st.warning("监控列表为空。")
     else:
-        st.error("数据结算中或网络断开，请稍后重试...")
+        st.info("🌙 系统当前处于保护模式（可能由于清算或拥堵），将自动尝试重连...")
 
-# 调用执行局部刷新容器
 render_dashboard()
